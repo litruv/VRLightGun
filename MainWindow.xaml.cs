@@ -46,14 +46,28 @@ public partial class MainWindow : Window
         InitializeComponent();
         this.StateChanged += MainWindow_StateChanged;
         this.Closing += MainWindow_Closing;
-        OpenDebug3DWindow();
         LoadCalibration();
     }
 
-    private void OpenDebug3DWindow()
+    /// <summary>
+    /// Toggles the 3D debug window visibility.
+    /// </summary>
+    public void ToggleDebugWindow()
     {
-        _debug3DWindow = new Debug3DWindow();
-        _debug3DWindow.Show();
+        if (_debug3DWindow == null || !_debug3DWindow.IsLoaded)
+        {
+            _debug3DWindow = new Debug3DWindow();
+            _debug3DWindow.Show();
+        }
+        else if (_debug3DWindow.IsVisible)
+        {
+            _debug3DWindow.Hide();
+        }
+        else
+        {
+            _debug3DWindow.Show();
+            _debug3DWindow.Activate();
+        }
     }
 
     private void MainWindow_StateChanged(object? sender, EventArgs e)

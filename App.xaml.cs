@@ -25,14 +25,18 @@ public partial class App : System.Windows.Application
         _trayIcon = new NotifyIcon();
         _trayIcon.Icon = SystemIcons.Application;
         _trayIcon.Visible = true;
-        _trayIcon.Text = "KnuckleGunTray";
+        _trayIcon.Text = "VR Light Gun";
 
         var contextMenu = new ContextMenuStrip();
         var showItem = new ToolStripMenuItem("Show Window");
         showItem.Click += (s, ev) => ShowMainWindow();
+        var debugItem = new ToolStripMenuItem("Debug View");
+        debugItem.Click += (s, ev) => _mainWindow?.ToggleDebugWindow();
         var exitItem = new ToolStripMenuItem("Exit");
         exitItem.Click += (s, ev) => ExitApp();
         contextMenu.Items.Add(showItem);
+        contextMenu.Items.Add(debugItem);
+        contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add(exitItem);
         _trayIcon.ContextMenuStrip = contextMenu;
 
