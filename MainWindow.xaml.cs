@@ -56,6 +56,9 @@ public partial class MainWindow : Window
 
     // 3D Debug window
     private Debug3DWindow? _debug3DWindow;
+    
+    // Cached primary controller for debug visualization (updated when controller states change)
+    private ControllerState? _primaryController;
 
     public MainWindow()
     {
@@ -63,9 +66,16 @@ public partial class MainWindow : Window
         this.StateChanged += MainWindow_StateChanged;
         this.Closing += MainWindow_Closing;
         
-        // Initialize controller enabled states from checkboxes
-        _rightHand.IsEnabled = true; // Default to right hand enabled
-        _leftHand.IsEnabled = false;
+        // Initialize controller enabled states from checkbox defaults (synced with XAML)
+        _rightHand.IsEnabled = RightHandCheckBox.IsChecked == true;
+        _leftHand.IsEnabled = LeftHandCheckBox.IsChecked == true;
+        
+        // Update debug panel visibility to match initial state
+        LeftHandDebugPanel.Visibility = _leftHand.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+        RightHandDebugPanel.Visibility = _rightHand.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
+        
+        // Initialize cached primary controller
+        UpdatePrimaryController();
         
         LoadCalibration();
     }
@@ -126,8 +136,24 @@ public partial class MainWindow : Window
         LeftHandDebugPanel.Visibility = _leftHand.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
         RightHandDebugPanel.Visibility = _rightHand.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
         
+        // Update cached primary controller for debug visualization
+        UpdatePrimaryController();
+        
         // Restart emulation if calibration is complete
         RestartEmulationIfNeeded();
+    }
+    
+    /// <summary>
+    /// Updates the cached primary controller used for debug visualization.
+    /// </summary>
+    private void UpdatePrimaryController()
+    {
+        if (_rightHand.IsEnabled)
+            _primaryController = _rightHand;
+        else if (_leftHand.IsEnabled)
+            _primaryController = _leftHand;
+        else
+            _primaryController = null;
     }
 
     private void RestartEmulationIfNeeded()
@@ -138,12 +164,26 @@ public partial class MainWindow : Window
         // Disconnect virtual controllers for disabled hands
         if (!_leftHand.IsEnabled && _leftHand.VirtualController != null)
         {
-            try { _leftHand.VirtualController.Disconnect(); } catch { }
+            try 
+            { 
+                _leftHand.VirtualController.Disconnect(); 
+            } 
+            catch (Exception ex) 
+            { 
+                System.Diagnostics.Debug.WriteLine($"Failed to disconnect left hand controller: {ex.Message}"); 
+            }
             _leftHand.VirtualController = null;
         }
         if (!_rightHand.IsEnabled && _rightHand.VirtualController != null)
         {
-            try { _rightHand.VirtualController.Disconnect(); } catch { }
+            try 
+            { 
+                _rightHand.VirtualController.Disconnect(); 
+            } 
+            catch (Exception ex) 
+            { 
+                System.Diagnostics.Debug.WriteLine($"Failed to disconnect right hand controller: {ex.Message}"); 
+            }
             _rightHand.VirtualController = null;
         }
         
@@ -154,6 +194,41 @@ public partial class MainWindow : Window
         {
             StartViGEmEmulation();
         }
+    }
+
+    /// <summary>
+    /// Finds an available controller for calibration. Prefers enabled controllers, falls back to any available.
+    /// </summary>
+    /// <returns>A tuple containing the controller index and name, or invalid index if none found.</returns>
+    private (uint controllerIndex, string controllerName) FindCalibrationController()
+    {
+        // Try enabled controllers first (prefer right hand)
+        var controllersToTry = new List<(Valve.VR.ETrackedControllerRole role, string name, bool isEnabled)>
+        {
+            (Valve.VR.ETrackedControllerRole.RightHand, "Right Hand", _rightHand.IsEnabled),
+            (Valve.VR.ETrackedControllerRole.LeftHand, "Left Hand", _leftHand.IsEnabled)
+        };
+        
+        // First pass: try enabled controllers
+        foreach (var (role, name, isEnabled) in controllersToTry)
+        {
+            if (isEnabled)
+            {
+                uint index = _vrSystem!.GetTrackedDeviceIndexForControllerRole(role);
+                if (index != Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid)
+                    return (index, name);
+            }
+        }
+        
+        // Second pass: try any available controller
+        foreach (var (role, name, _) in controllersToTry)
+        {
+            uint index = _vrSystem!.GetTrackedDeviceIndexForControllerRole(role);
+            if (index != Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid)
+                return (index, name);
+        }
+        
+        return (Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid, "");
     }
 
     private async void StartCalibrationButton_Click(object sender, RoutedEventArgs e)
@@ -168,32 +243,7 @@ public partial class MainWindow : Window
         _emulationCts?.Cancel();
         
         // Find the first available controller to use for calibration
-        uint calibrationController = Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid;
-        string controllerName = "";
-        
-        // Try right hand first if enabled, then left hand
-        if (_rightHand.IsEnabled)
-        {
-            calibrationController = _vrSystem!.GetTrackedDeviceIndexForControllerRole(Valve.VR.ETrackedControllerRole.RightHand);
-            controllerName = "Right Hand";
-        }
-        if (calibrationController == Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid && _leftHand.IsEnabled)
-        {
-            calibrationController = _vrSystem!.GetTrackedDeviceIndexForControllerRole(Valve.VR.ETrackedControllerRole.LeftHand);
-            controllerName = "Left Hand";
-        }
-        
-        // If no enabled controller found, try any available controller
-        if (calibrationController == Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid)
-        {
-            calibrationController = _vrSystem!.GetTrackedDeviceIndexForControllerRole(Valve.VR.ETrackedControllerRole.RightHand);
-            controllerName = "Right Hand";
-            if (calibrationController == Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid)
-            {
-                calibrationController = _vrSystem!.GetTrackedDeviceIndexForControllerRole(Valve.VR.ETrackedControllerRole.LeftHand);
-                controllerName = "Left Hand";
-            }
-        }
+        var (calibrationController, controllerName) = FindCalibrationController();
         
         if (calibrationController == Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid)
         {
@@ -532,8 +582,8 @@ public partial class MainWindow : Window
                     DebugYBox.Text = yNorm.ToString("F3");
                 }
 
-                // Update 3D debug window (show first enabled controller)
-                if (_debug3DWindow != null && controller == GetPrimaryController())
+                // Update 3D debug window (show primary controller only)
+                if (_debug3DWindow != null && controller == _primaryController)
                 {
                     var controllerPos3D = new System.Windows.Media.Media3D.Point3D(m.m3, m.m7, m.m11);
                     var pointingDir = new System.Windows.Media.Media3D.Vector3D(dir.X, dir.Y, dir.Z);
@@ -561,18 +611,6 @@ public partial class MainWindow : Window
 
             controller.VirtualController.SubmitReport();
         }
-    }
-
-    /// <summary>
-    /// Gets the primary controller for debug visualization (prefers right hand).
-    /// </summary>
-    private ControllerState? GetPrimaryController()
-    {
-        if (_rightHand.IsEnabled)
-            return _rightHand;
-        if (_leftHand.IsEnabled)
-            return _leftHand;
-        return null;
     }
 
     /// <summary>
