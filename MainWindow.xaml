@@ -1,0 +1,22 @@
+﻿<Window x:Class="VRLightGun.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:VRLightGun"
+        mc:Ignorable="d"
+        Title="VR Light Gun" Height="450" Width="800">
+    <Grid Margin="16">
+        <StackPanel VerticalAlignment="Top" HorizontalAlignment="Left" Width="350">
+            <TextBlock Text="Controller-to-Screen Calibration" FontWeight="Bold" FontSize="18" Margin="0,0,0,12"/>
+            <TextBlock x:Name="CalibrationInstructions" Text="Press 'Start Calibration' and follow the on-screen instructions." TextWrapping="Wrap" Margin="0,0,0,12"/>
+            <Button x:Name="StartCalibrationButton" Content="Start Calibration" Width="160" Height="32" Click="StartCalibrationButton_Click"/>
+            <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+                <TextBlock Text="X:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <TextBox x:Name="DebugXBox" Width="80" IsReadOnly="True" Margin="0,0,12,0"/>
+                <TextBlock Text="Y:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <TextBox x:Name="DebugYBox" Width="80" IsReadOnly="True"/>
+            </StackPanel>
+        </StackPanel>
+    </Grid>
+</Window>
