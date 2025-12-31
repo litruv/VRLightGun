@@ -5,17 +5,31 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:VRLightGun"
         mc:Ignorable="d"
-        Title="VR Light Gun" Height="450" Width="800">
+        Title="VR Light Gun" Height="500" Width="800">
     <Grid Margin="16">
         <StackPanel VerticalAlignment="Top" HorizontalAlignment="Left" Width="350">
-            <TextBlock Text="Controller-to-Screen Calibration" FontWeight="Bold" FontSize="18" Margin="0,0,0,12"/>
+            <TextBlock Text="Controller Selection" FontWeight="Bold" FontSize="18" Margin="0,0,0,12"/>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                <CheckBox x:Name="LeftHandCheckBox" Content="Left Hand" Margin="0,0,16,0" Checked="ControllerSelection_Changed" Unchecked="ControllerSelection_Changed"/>
+                <CheckBox x:Name="RightHandCheckBox" Content="Right Hand" IsChecked="True" Checked="ControllerSelection_Changed" Unchecked="ControllerSelection_Changed"/>
+            </StackPanel>
+            
+            <TextBlock Text="Controller-to-Screen Calibration" FontWeight="Bold" FontSize="18" Margin="0,12,0,12"/>
             <TextBlock x:Name="CalibrationInstructions" Text="Press 'Start Calibration' and follow the on-screen instructions." TextWrapping="Wrap" Margin="0,0,0,12"/>
             <Button x:Name="StartCalibrationButton" Content="Start Calibration" Width="160" Height="32" Click="StartCalibrationButton_Click"/>
-            <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-                <TextBlock Text="X:" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                <TextBox x:Name="DebugXBox" Width="80" IsReadOnly="True" Margin="0,0,12,0"/>
+            
+            <TextBlock Text="Debug Output" FontWeight="Bold" FontSize="14" Margin="0,24,0,8"/>
+            <StackPanel x:Name="LeftHandDebugPanel" Orientation="Horizontal" Margin="0,4,0,0" Visibility="Collapsed">
+                <TextBlock Text="Left Hand - X:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <TextBox x:Name="DebugLeftXBox" Width="60" IsReadOnly="True" Margin="0,0,8,0"/>
                 <TextBlock Text="Y:" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                <TextBox x:Name="DebugYBox" Width="80" IsReadOnly="True"/>
+                <TextBox x:Name="DebugLeftYBox" Width="60" IsReadOnly="True"/>
+            </StackPanel>
+            <StackPanel x:Name="RightHandDebugPanel" Orientation="Horizontal" Margin="0,4,0,0">
+                <TextBlock Text="Right Hand - X:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <TextBox x:Name="DebugXBox" Width="60" IsReadOnly="True" Margin="0,0,8,0"/>
+                <TextBlock Text="Y:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <TextBox x:Name="DebugYBox" Width="60" IsReadOnly="True"/>
             </StackPanel>
         </StackPanel>
     </Grid>

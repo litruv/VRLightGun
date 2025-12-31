@@ -17,17 +17,25 @@ Use your VR controller as a light gun for emulators and games. This tool tracks 
 4. The app calculates where your pointing ray intersects the virtual screen plane
 5. Screen coordinates are mapped to an emulated Xbox 360 left stick
 
+## Features
+
+- **Multiple Controller Support**: Enable left hand, right hand, or both controllers simultaneously
+- **Shared Calibration**: Calibrate once with any controller, and all controllers use the same screen calibration
+- **Multiple Virtual Controllers**: Each enabled VR controller creates its own virtual Xbox 360 controller
+- **Works with Any SteamVR Controller**: Valve Index, HTC Vive, Oculus/Meta Quest (via Link), and other SteamVR-compatible controllers
+
 ## Usage
 
 1. **Install ViGEmBus** - Download and install from the link above
 2. **Start SteamVR** - Make sure your VR headset and controller are tracked
 3. **Run VRLightGun.exe**
-4. **Calibrate**:
+4. **Select Controllers** - Check the boxes for which controllers you want to use (Left Hand, Right Hand, or both)
+5. **Calibrate**:
    - Click "Start Calibration"
    - Point at the **top-left** corner of your monitor and pull the trigger
    - Point at the **top-right** corner and pull the trigger
    - Point at the **bottom-right** corner and pull the trigger
-5. **Play!** - The calibration is saved to `calibration.json` and loads automatically next time
+6. **Play!** - The calibration is saved to `calibration.json` and loads automatically next time
 
 ## Controller Mapping
 
