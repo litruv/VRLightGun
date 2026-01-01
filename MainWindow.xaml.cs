@@ -409,11 +409,6 @@ public partial class MainWindow : Window
         input.GetInputSourceHandle("/user/hand/left", ref _leftHandHandle);
         input.GetInputSourceHandle("/user/hand/right", ref _rightHandHandle);
 
-        if (errors.Count > 0)
-        {
-            System.Windows.MessageBox.Show($"Action handle errors:\n{string.Join("\n", errors)}", "VR Debug");
-        }
-
         System.Diagnostics.Debug.WriteLine($"[VRInput] ActionSet={_actionSetHandle}, Thumbstick={_thumbstickAction}, RightHand={_rightHandHandle}");
         
         return _actionSetHandle != 0;
@@ -456,18 +451,10 @@ public partial class MainWindow : Window
 }}";
                 System.IO.File.WriteAllText(manifestPath, manifestContent);
 
-                // Register manifest and identify this running process; show results for debugging
+                // Register manifest and identify this running process
                 bool installed = applications.IsApplicationInstalled(appKey);
                 var addResult = applications.AddApplicationManifest(manifestPath, false);
                 var identifyResult = applications.IdentifyApplication((uint)System.Diagnostics.Process.GetCurrentProcess().Id, appKey);
-
-                System.Windows.MessageBox.Show(
-                        $"SteamVR app registration:\n" +
-                        $"Manifest: {manifestPath}\n" +
-                        $"WasInstalledBefore: {installed}\n" +
-                        $"AddApplicationManifest: {addResult}\n" +
-                        $"IdentifyApplication: {identifyResult}",
-                        "SteamVR Registration");
         }
 
     private System.Windows.Threading.DispatcherTimer? _calibrationTimer;
