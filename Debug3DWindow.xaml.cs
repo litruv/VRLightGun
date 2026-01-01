@@ -5,13 +5,25 @@ using System.Windows.Media.Media3D;
 namespace VRLightGun;
 
 /// <summary>
+/// Data for a single controller in the debug view.
+/// </summary>
+public class ControllerDebugData
+{
+    public string Name { get; set; } = "";
+    public Point3D Position { get; set; }
+    public Vector3D Direction { get; set; }
+    public float XNorm { get; set; }
+    public float YNorm { get; set; }
+    public System.Windows.Media.Color Color { get; set; } = Colors.LimeGreen;
+}
+
+/// <summary>
 /// 3D debug visualization window for calibration and pointing.
 /// </summary>
 public partial class Debug3DWindow : Window
 {
     private Point3D[] _calibrationPoints = new Point3D[3];
-    private Vector3D _pointingDirection;
-    private Point3D _controllerPosition;
+    private readonly List<ControllerDebugData> _controllers = new();
     private double _cameraDistance = 3.0;
 
     public Debug3DWindow()
@@ -49,7 +61,28 @@ public partial class Debug3DWindow : Window
     }
 
     /// <summary>
-    /// Updates the debug visualization with current data.
+    /// Updates the debug visualization with multiple controllers.
+    /// </summary>
+    /// <param name="calibrationPoints">The three calibration points (TL, TR, BR).</param>
+    /// <param name="controllers">List of controller data to visualize.</param>
+    public void UpdateVisualization(Point3D[] calibrationPoints, List<ControllerDebugData> controllers)
+    {
+        _calibrationPoints = calibrationPoints;
+        _controllers.Clear();
+        _controllers.AddRange(controllers);
+
+        Dispatcher.Invoke(() =>
+        {
+            UpdateCalibrationPoints();
+            UpdateScreenPlane();
+            UpdatePointingRays();
+            UpdateControllers();
+            UpdateInfoText();
+        });
+    }
+
+    /// <summary>
+    /// Updates the debug visualization with current data (legacy single-controller support).
     /// </summary>
     public void UpdateVisualization(
         Point3D[] calibrationPoints,
@@ -58,18 +91,19 @@ public partial class Debug3DWindow : Window
         float xNorm,
         float yNorm)
     {
-        _calibrationPoints = calibrationPoints;
-        _pointingDirection = pointingDirection;
-        _controllerPosition = controllerPosition;
-
-        Dispatcher.Invoke(() =>
+        var controllers = new List<ControllerDebugData>
         {
-            UpdateCalibrationPoints();
-            UpdateScreenPlane();
-            UpdatePointingRay();
-            UpdateController();
-            UpdateInfoText(xNorm, yNorm);
-        });
+            new ControllerDebugData
+            {
+                Name = "Controller",
+                Position = controllerPosition,
+                Direction = pointingDirection,
+                XNorm = xNorm,
+                YNorm = yNorm,
+                Color = Colors.LimeGreen
+            }
+        };
+        UpdateVisualization(calibrationPoints, controllers);
     }
 
     private void UpdateCalibrationPoints()
@@ -114,40 +148,48 @@ public partial class Debug3DWindow : Window
         ScreenPlaneVisual.Content = group;
     }
 
-    private void UpdatePointingRay()
+    private void UpdatePointingRays()
     {
         var group = new Model3DGroup();
 
-        if (_pointingDirection != default)
+        foreach (var controller in _controllers)
         {
-            // Draw pointing ray from controller position
-            var rayEnd = _controllerPosition + _pointingDirection * 2.0;
-            group.Children.Add(CreateLine(_controllerPosition, rayEnd, Colors.Orange));
-
-            // Draw small sphere at ray end
-            group.Children.Add(CreateSphere(rayEnd, 0.02, Colors.Orange));
+            if (controller.Direction != default)
+            {
+                var rayEnd = controller.Position + controller.Direction * 2.0;
+                group.Children.Add(CreateLine(controller.Position, rayEnd, controller.Color));
+                group.Children.Add(CreateSphere(rayEnd, 0.02, controller.Color));
+            }
         }
 
         PointingRayVisual.Content = group;
     }
 
-    private void UpdateController()
+    private void UpdateControllers()
     {
         var group = new Model3DGroup();
 
-        if (_controllerPosition != default)
+        foreach (var controller in _controllers)
         {
-            group.Children.Add(CreateSphere(_controllerPosition, 0.05, Colors.LimeGreen));
+            if (controller.Position != default)
+            {
+                group.Children.Add(CreateSphere(controller.Position, 0.05, controller.Color));
+            }
         }
 
         ControllerVisual.Content = group;
     }
 
-    private void UpdateInfoText(float xNorm, float yNorm)
+    private void UpdateInfoText()
     {
-        InfoText.Text = $"X: {xNorm:F3}  Y: {yNorm:F3}\n" +
-                        $"Dir: ({_pointingDirection.X:F2}, {_pointingDirection.Y:F2}, {_pointingDirection.Z:F2})\n" +
-                        $"Pos: ({_controllerPosition.X:F2}, {_controllerPosition.Y:F2}, {_controllerPosition.Z:F2})";
+        var lines = new List<string>();
+        foreach (var controller in _controllers)
+        {
+            lines.Add($"{controller.Name}: X={controller.XNorm:F3} Y={controller.YNorm:F3}");
+            lines.Add($"  Dir: ({controller.Direction.X:F2}, {controller.Direction.Y:F2}, {controller.Direction.Z:F2})");
+            lines.Add($"  Pos: ({controller.Position.X:F2}, {controller.Position.Y:F2}, {controller.Position.Z:F2})");
+        }
+        InfoText.Text = string.Join("\n", lines);
     }
 
     private void CameraAngleSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)

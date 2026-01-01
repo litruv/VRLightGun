@@ -1,0 +1,17 @@
+{
+  "source": "user",
+  "applications": [
+    {
+      "app_key": "com.knucklegun.lightgun",
+      "launch_type": "binary",
+      "binary_path_windows": "VRLightGun.exe",
+      "is_dashboard_overlay": false,
+      "strings": {
+        "en_us": {
+          "name": "KnuckleGun VR Light Gun",
+          "description": "VR Light Gun Emulator using Index Controllers"
+        }
+      }
+    }
+  ]
+}

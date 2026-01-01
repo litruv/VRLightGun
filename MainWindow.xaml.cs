@@ -31,15 +31,26 @@ public partial class MainWindow : Window
     /// </summary>
     private class ControllerState
     {
-        public bool IsEnabled { get; set; }
+        public bool IsAvailable { get; set; }
         public Nefarius.ViGEm.Client.Targets.IXbox360Controller? VirtualController { get; set; }
         public Valve.VR.ETrackedControllerRole Role { get; set; }
         public string Name { get; set; } = "";
+        public System.Windows.Media.Color DebugColor { get; set; } = System.Windows.Media.Colors.LimeGreen;
     }
 
     // Controller states for left and right hands
-    private readonly ControllerState _leftHand = new() { Role = Valve.VR.ETrackedControllerRole.LeftHand, Name = "Left Hand" };
-    private readonly ControllerState _rightHand = new() { Role = Valve.VR.ETrackedControllerRole.RightHand, Name = "Right Hand" };
+    private readonly ControllerState _leftHand = new() 
+    { 
+        Role = Valve.VR.ETrackedControllerRole.LeftHand, 
+        Name = "Left Hand",
+        DebugColor = System.Windows.Media.Colors.Cyan
+    };
+    private readonly ControllerState _rightHand = new() 
+    { 
+        Role = Valve.VR.ETrackedControllerRole.RightHand, 
+        Name = "Right Hand",
+        DebugColor = System.Windows.Media.Colors.Orange
+    };
 
     // Shared calibration data (used by all controllers)
     private CalibrationStep _calibrationStep = CalibrationStep.None;
@@ -49,7 +60,16 @@ public partial class MainWindow : Window
     // SteamVR/OpenVR fields
     private Valve.VR.CVRSystem? _vrSystem;
     private System.Threading.CancellationTokenSource? _pollingCts;
-    private System.Threading.CancellationTokenSource? _emulationCts;
+
+    // IVRInput action handles
+    private ulong _actionSetHandle;
+    private ulong _triggerAction, _triggerValueAction;
+    private ulong _gripAction, _gripValueAction;
+    private ulong _aButtonAction, _bButtonAction;
+    private ulong _thumbstickAction, _thumbstickClickAction;
+    private ulong _trackpadAction, _trackpadTouchAction;
+    private ulong _poseAction;
+    private ulong _leftHandHandle, _rightHandHandle;
 
     // ViGEm fields
     private Nefarius.ViGEm.Client.ViGEmClient? _vigemClient;
@@ -57,8 +77,8 @@ public partial class MainWindow : Window
     // 3D Debug window
     private Debug3DWindow? _debug3DWindow;
     
-    // Cached primary controller for debug visualization (updated when controller states change)
-    private ControllerState? _primaryController;
+    // Axis debug timer
+    private System.Windows.Threading.DispatcherTimer? _axisDebugTimer;
 
     public MainWindow()
     {
@@ -66,18 +86,82 @@ public partial class MainWindow : Window
         this.StateChanged += MainWindow_StateChanged;
         this.Closing += MainWindow_Closing;
         
-        // Initialize controller enabled states from checkbox defaults (synced with XAML)
-        _rightHand.IsEnabled = RightHandCheckBox.IsChecked == true;
-        _leftHand.IsEnabled = LeftHandCheckBox.IsChecked == true;
-        
-        // Update debug panel visibility to match initial state
-        LeftHandDebugPanel.Visibility = _leftHand.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
-        RightHandDebugPanel.Visibility = _rightHand.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
-        
-        // Initialize cached primary controller
-        UpdatePrimaryController();
-        
         LoadCalibration();
+        StartAxisDebugTimer();
+    }
+
+    private void StartAxisDebugTimer()
+    {
+        _axisDebugTimer = new System.Windows.Threading.DispatcherTimer();
+        // Slow this down a bit so the text is readable and doesn't flicker
+        _axisDebugTimer.Interval = TimeSpan.FromMilliseconds(200);
+        _axisDebugTimer.Tick += (s, e) =>
+        {
+            if (_vrSystem == null)
+            {
+                if (!InitOpenVR())
+                    return;
+            }
+
+            var input = Valve.VR.OpenVR.Input;
+            if (input == null || _actionSetHandle == 0)
+            {
+                AxisDebugBox.Text = "Input not initialized";
+                return;
+            }
+
+            // Update action state
+            var actionSet = new Valve.VR.VRActiveActionSet_t
+            {
+                ulActionSet = _actionSetHandle,
+                ulRestrictedToDevice = Valve.VR.OpenVR.k_ulInvalidInputValueHandle,
+                ulSecondaryActionSet = 0,
+                unPadding = 0,
+                nPriority = 0
+            };
+            var actionSets = new[] { actionSet };
+            input.UpdateActionState(actionSets, (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.VRActiveActionSet_t)));
+
+            // Get thumbstick data (right hand) - try with 0 to not restrict
+            var thumbstickData = new Valve.VR.InputAnalogActionData_t();
+            var thumbErr = input.GetAnalogActionData(_thumbstickAction, ref thumbstickData, 
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputAnalogActionData_t)), 0);
+
+            // Get trackpad data
+            var trackpadData = new Valve.VR.InputAnalogActionData_t();
+            var trackErr = input.GetAnalogActionData(_trackpadAction, ref trackpadData,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputAnalogActionData_t)), 0);
+
+            // Get trigger value
+            var triggerData = new Valve.VR.InputAnalogActionData_t();
+            var triggerErr = input.GetAnalogActionData(_triggerValueAction, ref triggerData,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputAnalogActionData_t)), 0);
+
+            // Get grip value
+            var gripData = new Valve.VR.InputAnalogActionData_t();
+            var gripErr = input.GetAnalogActionData(_gripValueAction, ref gripData,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputAnalogActionData_t)), 0);
+
+            // Get button states
+            var triggerBtn = new Valve.VR.InputDigitalActionData_t();
+            var trigBtnErr = input.GetDigitalActionData(_triggerAction, ref triggerBtn,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputDigitalActionData_t)), 0);
+            var aBtn = new Valve.VR.InputDigitalActionData_t();
+            input.GetDigitalActionData(_aButtonAction, ref aBtn,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputDigitalActionData_t)), 0);
+            var bBtn = new Valve.VR.InputDigitalActionData_t();
+            input.GetDigitalActionData(_bButtonAction, ref bBtn,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputDigitalActionData_t)), 0);
+
+            AxisDebugBox.Text =
+                $"Thumbstick: ({thumbstickData.x:F2}, {thumbstickData.y:F2}) err={thumbErr} active={thumbstickData.bActive}\n" +
+                $"Trackpad: ({trackpadData.x:F2}, {trackpadData.y:F2}) err={trackErr} active={trackpadData.bActive}\n" +
+                $"Trigger: {triggerData.x:F2} err={triggerErr} active={triggerData.bActive}\n" +
+                $"Grip: {gripData.x:F2} err={gripErr} active={gripData.bActive}\n" +
+                $"TrigBtn: state={(triggerBtn.bState ? "1" : "0")} active={triggerBtn.bActive} err={trigBtnErr}  A:{(aBtn.bState ? "1" : "0")} B:{(bBtn.bState ? "1" : "0")}\n" +
+                $"Handles: AS={_actionSetHandle} TS={_thumbstickAction}";
+        };
+        _axisDebugTimer.Start();
     }
 
     /// <summary>
@@ -120,108 +204,90 @@ public partial class MainWindow : Window
             this.ShowInTaskbar = false;
         }
         _pollingCts?.Cancel();
-        _emulationCts?.Cancel();
+        _emulationTimer?.Stop();
+        _axisDebugTimer?.Stop();
         _vrSystem = null;
     }
 
     /// <summary>
-    /// Handles changes to the controller selection checkboxes.
+    /// Updates the availability of controllers based on what SteamVR detects.
     /// </summary>
-    private void ControllerSelection_Changed(object sender, RoutedEventArgs e)
+    private void UpdateControllerAvailability()
     {
-        _leftHand.IsEnabled = LeftHandCheckBox.IsChecked == true;
-        _rightHand.IsEnabled = RightHandCheckBox.IsChecked == true;
-        
-        // Update debug panel visibility
-        LeftHandDebugPanel.Visibility = _leftHand.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
-        RightHandDebugPanel.Visibility = _rightHand.IsEnabled ? Visibility.Visible : Visibility.Collapsed;
-        
-        // Update cached primary controller for debug visualization
-        UpdatePrimaryController();
-        
-        // Restart emulation if calibration is complete
-        RestartEmulationIfNeeded();
-    }
-    
-    /// <summary>
-    /// Updates the cached primary controller used for debug visualization.
-    /// </summary>
-    private void UpdatePrimaryController()
-    {
-        if (_rightHand.IsEnabled)
-            _primaryController = _rightHand;
-        else if (_leftHand.IsEnabled)
-            _primaryController = _leftHand;
-        else
-            _primaryController = null;
-    }
-
-    private void RestartEmulationIfNeeded()
-    {
-        // Stop current emulation
-        _emulationCts?.Cancel();
-        
-        // Disconnect virtual controllers for disabled hands
-        if (!_leftHand.IsEnabled && _leftHand.VirtualController != null)
+        if (_vrSystem == null)
         {
-            try 
-            { 
-                _leftHand.VirtualController.Disconnect(); 
-            } 
-            catch (Exception ex) 
-            { 
-                System.Diagnostics.Debug.WriteLine($"Failed to disconnect left hand controller: {ex.Message}"); 
-            }
+            _leftHand.IsAvailable = false;
+            _rightHand.IsAvailable = false;
+            UpdateControllerStatusUI();
+            return;
+        }
+
+        uint leftIndex = _vrSystem.GetTrackedDeviceIndexForControllerRole(Valve.VR.ETrackedControllerRole.LeftHand);
+        uint rightIndex = _vrSystem.GetTrackedDeviceIndexForControllerRole(Valve.VR.ETrackedControllerRole.RightHand);
+
+        bool leftWasAvailable = _leftHand.IsAvailable;
+        bool rightWasAvailable = _rightHand.IsAvailable;
+
+        _leftHand.IsAvailable = leftIndex != Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid;
+        _rightHand.IsAvailable = rightIndex != Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid;
+
+        // Manage virtual controllers based on availability
+        if (_leftHand.IsAvailable && !leftWasAvailable && _vigemClient != null)
+        {
+            _leftHand.VirtualController = _vigemClient.CreateXbox360Controller();
+            _leftHand.VirtualController.Connect();
+        }
+        else if (!_leftHand.IsAvailable && leftWasAvailable && _leftHand.VirtualController != null)
+        {
+            try { _leftHand.VirtualController.Disconnect(); } catch { }
             _leftHand.VirtualController = null;
         }
-        if (!_rightHand.IsEnabled && _rightHand.VirtualController != null)
+
+        if (_rightHand.IsAvailable && !rightWasAvailable && _vigemClient != null)
         {
-            try 
-            { 
-                _rightHand.VirtualController.Disconnect(); 
-            } 
-            catch (Exception ex) 
-            { 
-                System.Diagnostics.Debug.WriteLine($"Failed to disconnect right hand controller: {ex.Message}"); 
-            }
+            _rightHand.VirtualController = _vigemClient.CreateXbox360Controller();
+            _rightHand.VirtualController.Connect();
+        }
+        else if (!_rightHand.IsAvailable && rightWasAvailable && _rightHand.VirtualController != null)
+        {
+            try { _rightHand.VirtualController.Disconnect(); } catch { }
             _rightHand.VirtualController = null;
         }
-        
-        // Start emulation if calibration is complete and at least one controller is enabled
-        bool hasEnabledController = _leftHand.IsEnabled || _rightHand.IsEnabled;
-            
-        if (_calibrationStep == CalibrationStep.Complete && hasEnabledController && InitOpenVR())
-        {
-            StartViGEmEmulation();
-        }
+
+        UpdateControllerStatusUI();
     }
 
     /// <summary>
-    /// Finds an available controller for calibration. Prefers enabled controllers, falls back to any available.
+    /// Updates the UI to reflect current controller availability.
+    /// </summary>
+    private void UpdateControllerStatusUI()
+    {
+        var parts = new List<string>();
+        if (_leftHand.IsAvailable) parts.Add("Left Hand");
+        if (_rightHand.IsAvailable) parts.Add("Right Hand");
+
+        if (parts.Count == 0)
+            ControllerStatusText.Text = "No controllers detected";
+        else
+            ControllerStatusText.Text = $"Active: {string.Join(", ", parts)}";
+
+        LeftHandDebugPanel.Visibility = _leftHand.IsAvailable ? Visibility.Visible : Visibility.Collapsed;
+        RightHandDebugPanel.Visibility = _rightHand.IsAvailable ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// Finds an available controller for calibration.
     /// </summary>
     /// <returns>A tuple containing the controller index and name, or invalid index if none found.</returns>
     private (uint controllerIndex, string controllerName) FindCalibrationController()
     {
-        // Try enabled controllers first (prefer right hand)
-        var controllersToTry = new List<(Valve.VR.ETrackedControllerRole role, string name, bool isEnabled)>
+        var controllersToTry = new List<(Valve.VR.ETrackedControllerRole role, string name)>
         {
-            (Valve.VR.ETrackedControllerRole.RightHand, "Right Hand", _rightHand.IsEnabled),
-            (Valve.VR.ETrackedControllerRole.LeftHand, "Left Hand", _leftHand.IsEnabled)
+            (Valve.VR.ETrackedControllerRole.RightHand, "Right Hand"),
+            (Valve.VR.ETrackedControllerRole.LeftHand, "Left Hand")
         };
         
-        // First pass: try enabled controllers
-        foreach (var (role, name, isEnabled) in controllersToTry)
-        {
-            if (isEnabled)
-            {
-                uint index = _vrSystem!.GetTrackedDeviceIndexForControllerRole(role);
-                if (index != Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid)
-                    return (index, name);
-            }
-        }
-        
-        // Second pass: try any available controller
-        foreach (var (role, name, _) in controllersToTry)
+        foreach (var (role, name) in controllersToTry)
         {
             uint index = _vrSystem!.GetTrackedDeviceIndexForControllerRole(role);
             if (index != Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid)
@@ -240,7 +306,7 @@ public partial class MainWindow : Window
         }
         
         // Stop any running emulation during calibration
-        _emulationCts?.Cancel();
+        _emulationTimer?.Stop();
         
         // Find the first available controller to use for calibration
         var (calibrationController, controllerName) = FindCalibrationController();
@@ -275,29 +341,188 @@ public partial class MainWindow : Window
         if (_vrSystem != null)
             return true;
         var error = Valve.VR.EVRInitError.None;
-        _vrSystem = Valve.VR.OpenVR.Init(ref error, Valve.VR.EVRApplicationType.VRApplication_Overlay);
-        return error == Valve.VR.EVRInitError.None && _vrSystem != null;
+        _vrSystem = Valve.VR.OpenVR.Init(ref error, Valve.VR.EVRApplicationType.VRApplication_Scene);
+        if (error != Valve.VR.EVRInitError.None || _vrSystem == null)
+        {
+            System.Windows.MessageBox.Show($"Failed to init OpenVR: {error}", "VR Error");
+            return false;
+        }
+        
+        // Ensure SteamVR knows about this application and links it to our actions
+        RegisterAsVRApplication();
+        
+        if (!InitVRInput())
+        {
+            System.Windows.MessageBox.Show("Failed to init VR Input actions", "VR Error");
+            return false;
+        }
+        
+        return true;
     }
+
+        private bool InitVRInput()
+        {
+                var input = Valve.VR.OpenVR.Input;
+                if (input == null)
+                        return false;
+
+                string? exeDir = System.IO.Path.GetDirectoryName(System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName);
+                if (exeDir == null)
+                        return false;
+
+                string actionsPath = System.IO.Path.Combine(exeDir, "actions.json");
+                if (!System.IO.File.Exists(actionsPath))
+                {
+                        System.Windows.MessageBox.Show($"actions.json not found at: {actionsPath}", "VR Error");
+                        return false;
+                }
+
+                var err = input.SetActionManifestPath(actionsPath);
+        if (err != Valve.VR.EVRInputError.None)
+        {
+            System.Windows.MessageBox.Show($"SetActionManifestPath failed: {err}", "VR Error");
+            return false;
+        }
+
+        var errors = new System.Collections.Generic.List<string>();
+        
+        var e1 = input.GetActionSetHandle("/actions/main", ref _actionSetHandle);
+        if (e1 != Valve.VR.EVRInputError.None) errors.Add($"ActionSet: {e1}");
+        
+        var e2 = input.GetActionHandle("/actions/main/in/Trigger", ref _triggerAction);
+        if (e2 != Valve.VR.EVRInputError.None) errors.Add($"Trigger: {e2}");
+        
+        input.GetActionHandle("/actions/main/in/TriggerValue", ref _triggerValueAction);
+        input.GetActionHandle("/actions/main/in/Grip", ref _gripAction);
+        input.GetActionHandle("/actions/main/in/GripValue", ref _gripValueAction);
+        input.GetActionHandle("/actions/main/in/AButton", ref _aButtonAction);
+        input.GetActionHandle("/actions/main/in/BButton", ref _bButtonAction);
+        
+        var eThumb = input.GetActionHandle("/actions/main/in/Thumbstick", ref _thumbstickAction);
+        if (eThumb != Valve.VR.EVRInputError.None) errors.Add($"Thumbstick: {eThumb}");
+        
+        input.GetActionHandle("/actions/main/in/ThumbstickClick", ref _thumbstickClickAction);
+        input.GetActionHandle("/actions/main/in/Trackpad", ref _trackpadAction);
+        input.GetActionHandle("/actions/main/in/TrackpadTouch", ref _trackpadTouchAction);
+        input.GetActionHandle("/actions/main/in/Pose", ref _poseAction);
+
+        input.GetInputSourceHandle("/user/hand/left", ref _leftHandHandle);
+        input.GetInputSourceHandle("/user/hand/right", ref _rightHandHandle);
+
+        if (errors.Count > 0)
+        {
+            System.Windows.MessageBox.Show($"Action handle errors:\n{string.Join("\n", errors)}", "VR Debug");
+        }
+
+        System.Diagnostics.Debug.WriteLine($"[VRInput] ActionSet={_actionSetHandle}, Thumbstick={_thumbstickAction}, RightHand={_rightHandHandle}");
+        
+        return _actionSetHandle != 0;
+    }
+
+        private void RegisterAsVRApplication()
+        {
+                var applications = Valve.VR.OpenVR.Applications;
+                if (applications == null)
+                {
+                        return;
+                }
+
+                string? exeDir = System.IO.Path.GetDirectoryName(System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName);
+                if (exeDir == null)
+                        return;
+
+                const string appKey = "com.knucklegun.lightgun";
+
+                string manifestPath = System.IO.Path.Combine(exeDir, "knucklegun.vrmanifest");
+        
+                string manifestContent = $@"{{
+    ""source"": ""user"",
+    ""applications"": [
+        {{
+            ""app_key"": ""{appKey}"",
+            ""launch_type"": ""binary"",
+            ""binary_path_windows"": ""{System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName?.Replace("\\", "\\\\")}"",
+            ""working_directory"": ""{exeDir.Replace("\\", "\\\\")}"",
+            ""is_dashboard_overlay"": false,
+            ""action_manifest_path"": ""actions.json"",
+            ""strings"": {{
+                ""en_us"": {{
+                    ""name"": ""KnuckleGun VR Light Gun"",
+                    ""description"": ""VR Light Gun Emulator using Index Controllers""
+                }}
+            }}
+        }}
+    ]
+}}";
+                System.IO.File.WriteAllText(manifestPath, manifestContent);
+
+                // Register manifest and identify this running process; show results for debugging
+                bool installed = applications.IsApplicationInstalled(appKey);
+                var addResult = applications.AddApplicationManifest(manifestPath, false);
+                var identifyResult = applications.IdentifyApplication((uint)System.Diagnostics.Process.GetCurrentProcess().Id, appKey);
+
+                System.Windows.MessageBox.Show(
+                        $"SteamVR app registration:\n" +
+                        $"Manifest: {manifestPath}\n" +
+                        $"WasInstalledBefore: {installed}\n" +
+                        $"AddApplicationManifest: {addResult}\n" +
+                        $"IdentifyApplication: {identifyResult}",
+                        "SteamVR Registration");
+        }
+
+    private System.Windows.Threading.DispatcherTimer? _calibrationTimer;
+    private uint _calibrationControllerIndex;
+    private string _calibrationControllerName = "";
+    private bool _waitingForTriggerRelease;
 
     private async System.Threading.Tasks.Task PollControllerForCalibration(System.Threading.CancellationToken token, uint controllerIndex, string controllerName)
     {
-        // Trigger button mask: k_EButton_SteamVR_Trigger = 33
-        const ulong triggerMask = 1UL << 33;
+        _calibrationControllerIndex = controllerIndex;
+        _calibrationControllerName = controllerName;
+        _waitingForTriggerRelease = false;
 
-        while (_calibrationStep != CalibrationStep.Complete && !token.IsCancellationRequested)
+        // Use a TaskCompletionSource to await calibration completion
+        var tcs = new System.Threading.Tasks.TaskCompletionSource<bool>();
+
+        _calibrationTimer = new System.Windows.Threading.DispatcherTimer();
+        _calibrationTimer.Interval = TimeSpan.FromMilliseconds(16); // ~60Hz
+        _calibrationTimer.Tick += (s, e) =>
         {
-            Valve.VR.VRControllerState_t state = new Valve.VR.VRControllerState_t();
-            Valve.VR.TrackedDevicePose_t[] poses = new Valve.VR.TrackedDevicePose_t[Valve.VR.OpenVR.k_unMaxTrackedDeviceCount];
-            _vrSystem!.GetDeviceToAbsoluteTrackingPose(Valve.VR.ETrackingUniverseOrigin.TrackingUniverseStanding, 0, poses);
-
-            bool triggerDown = false;
-            if (_vrSystem.GetControllerState(controllerIndex, ref state, (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.VRControllerState_t))))
+            if (_calibrationStep == CalibrationStep.Complete || token.IsCancellationRequested)
             {
-                triggerDown = (state.ulButtonPressed & triggerMask) != 0;
+                _calibrationTimer?.Stop();
+                tcs.TrySetResult(true);
+                return;
             }
 
-            // Get pose for debug visualization even before trigger press
-            var pose = poses[controllerIndex];
+            var input = Valve.VR.OpenVR.Input;
+            if (input == null || _actionSetHandle == 0 || _vrSystem == null)
+                return;
+
+            // Update action state
+            var actionSet = new Valve.VR.VRActiveActionSet_t
+            {
+                ulActionSet = _actionSetHandle,
+                ulRestrictedToDevice = Valve.VR.OpenVR.k_ulInvalidInputValueHandle,
+                ulSecondaryActionSet = 0,
+                unPadding = 0,
+                nPriority = 0
+            };
+            var actionSets = new[] { actionSet };
+            input.UpdateActionState(actionSets, (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.VRActiveActionSet_t)));
+
+            // Get trigger state using IVRInput
+            var triggerData = new Valve.VR.InputDigitalActionData_t();
+            input.GetDigitalActionData(_triggerAction, ref triggerData,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputDigitalActionData_t)), 0);
+
+            bool triggerDown = triggerData.bActive && triggerData.bState;
+
+            // Get poses
+            Valve.VR.TrackedDevicePose_t[] poses = new Valve.VR.TrackedDevicePose_t[Valve.VR.OpenVR.k_unMaxTrackedDeviceCount];
+            _vrSystem.GetDeviceToAbsoluteTrackingPose(Valve.VR.ETrackingUniverseOrigin.TrackingUniverseStanding, 0, poses);
+
+            var pose = poses[_calibrationControllerIndex];
             if (pose.bPoseIsValid)
             {
                 var m = pose.mDeviceToAbsoluteTracking;
@@ -305,35 +530,25 @@ public partial class MainWindow : Window
                 var pointingDir = GetPointingDirection(m);
 
                 // Update debug visualization during calibration
-                Dispatcher.Invoke(() => UpdateDebugDuringCalibration(controllerPos, pointingDir));
-            }
+                UpdateDebugDuringCalibration(controllerPos, pointingDir);
 
-            // Wait for trigger press
-            if (triggerDown)
-            {
-                // Get pose
-                if (pose.bPoseIsValid)
+                // Handle trigger press/release
+                if (_waitingForTriggerRelease)
                 {
-                    var m = pose.mDeviceToAbsoluteTracking;
-                    var controllerPos = new Point3D(m.m3, m.m7, m.m11);
-                    
-                    // Get the pointing direction with -45° pitch applied
-                    var pointingDir = GetPointingDirection(m);
-                    RecordCalibrationPoint(pointingDir, controllerPos, controllerName);
-
-                    // Wait for trigger release before next point
-                    while (triggerDown && !token.IsCancellationRequested)
-                    {
-                        if (_vrSystem.GetControllerState(controllerIndex, ref state, (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.VRControllerState_t))))
-                        {
-                            triggerDown = (state.ulButtonPressed & triggerMask) != 0;
-                        }
-                        await System.Threading.Tasks.Task.Delay(10, token);
-                    }
+                    if (!triggerDown)
+                        _waitingForTriggerRelease = false;
+                }
+                else if (triggerDown)
+                {
+                    RecordCalibrationPoint(pointingDir, controllerPos, _calibrationControllerName);
+                    _waitingForTriggerRelease = true;
                 }
             }
-            await System.Threading.Tasks.Task.Delay(10, token);
-        }
+        };
+        _calibrationTimer.Start();
+
+        // Wait for calibration to complete
+        await tcs.Task;
     }
 
     private void RecordCalibrationPoint(Point3D direction, Point3D position, string controllerName)
@@ -384,233 +599,340 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Starts ViGEm emulation of virtual Xbox 360 controllers for enabled hands.
-    /// Each enabled controller gets its own virtual Xbox 360 controller, but they all
+    /// Starts ViGEm emulation of virtual Xbox 360 controllers for available controllers.
+    /// Each available controller gets its own virtual Xbox 360 controller, but they all
     /// use the same shared calibration data.
     /// </summary>
+    private System.Windows.Threading.DispatcherTimer? _emulationTimer;
+
     private void StartViGEmEmulation()
     {
+        // Stop the debug timer - emulation timer will handle input now
+        _axisDebugTimer?.Stop();
+
         if (_vigemClient == null)
         {
             _vigemClient = new Nefarius.ViGEm.Client.ViGEmClient();
         }
-        
-        // Create and connect virtual controllers for enabled hands
-        var controllersToEmulate = new List<ControllerState>();
-        
-        if (_leftHand.IsEnabled)
+
+        // Use a DispatcherTimer so OpenVR calls stay on the UI thread (where Init was called)
+        _emulationTimer = new System.Windows.Threading.DispatcherTimer();
+        _emulationTimer.Interval = TimeSpan.FromMilliseconds(8); // ~120Hz polling
+        _emulationTimer.Tick += EmulationTimer_Tick;
+        _emulationTimer.Start();
+    }
+
+    private void EmulationTimer_Tick(object? sender, EventArgs e)
+    {
+        if (_vrSystem == null)
         {
-            if (_leftHand.VirtualController == null)
-            {
-                _leftHand.VirtualController = _vigemClient.CreateXbox360Controller();
-                _leftHand.VirtualController.Connect();
-            }
-            controllersToEmulate.Add(_leftHand);
+            _emulationTimer?.Stop();
+            return;
         }
-        
-        if (_rightHand.IsEnabled)
-        {
-            if (_rightHand.VirtualController == null)
-            {
-                _rightHand.VirtualController = _vigemClient.CreateXbox360Controller();
-                _rightHand.VirtualController.Connect();
-            }
-            controllersToEmulate.Add(_rightHand);
-        }
-        
-        if (controllersToEmulate.Count == 0)
+
+        var input = Valve.VR.OpenVR.Input;
+        if (input == null || _actionSetHandle == 0)
             return;
 
-        _emulationCts = new System.Threading.CancellationTokenSource();
-        var token = _emulationCts.Token;
-
-        // Start polling controller pose and trigger to update the virtual devices
-        System.Threading.Tasks.Task.Run(async () =>
+        var actionSet = new Valve.VR.VRActiveActionSet_t
         {
-            while (!token.IsCancellationRequested)
+            ulActionSet = _actionSetHandle,
+            ulRestrictedToDevice = Valve.VR.OpenVR.k_ulInvalidInputValueHandle,
+            ulSecondaryActionSet = 0,
+            unPadding = 0,
+            nPriority = 0
+        };
+        var actionSets = new[] { actionSet };
+        input.UpdateActionState(actionSets, (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.VRActiveActionSet_t)));
+
+        // Update controller availability dynamically
+        UpdateControllerAvailability();
+
+        Valve.VR.TrackedDevicePose_t[] poses = new Valve.VR.TrackedDevicePose_t[Valve.VR.OpenVR.k_unMaxTrackedDeviceCount];
+        _vrSystem.GetDeviceToAbsoluteTrackingPose(Valve.VR.ETrackingUniverseOrigin.TrackingUniverseStanding, 0, poses);
+
+        var debugDataList = new List<ControllerDebugData>();
+
+        foreach (var controller in new[] { _leftHand, _rightHand })
+        {
+            if (!controller.IsAvailable || controller.VirtualController == null)
+                continue;
+
+            uint controllerIndex = _vrSystem.GetTrackedDeviceIndexForControllerRole(controller.Role);
+            if (controllerIndex == Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid)
+                continue;
+
+            var debugData = ProcessControllerInput(controller, controllerIndex, poses, input);
+            if (debugData != null)
+                debugDataList.Add(debugData);
+        }
+
+        // Update 3D debug window with all controllers
+        if (_debug3DWindow != null && debugDataList.Count > 0)
+        {
+            var calibPositions = new System.Windows.Media.Media3D.Point3D[]
             {
-                if (_vrSystem == null)
-                    break;
-
-                Valve.VR.TrackedDevicePose_t[] poses = new Valve.VR.TrackedDevicePose_t[Valve.VR.OpenVR.k_unMaxTrackedDeviceCount];
-                _vrSystem.GetDeviceToAbsoluteTrackingPose(Valve.VR.ETrackingUniverseOrigin.TrackingUniverseStanding, 0, poses);
-
-                foreach (var controller in controllersToEmulate)
-                {
-                    if (!controller.IsEnabled || controller.VirtualController == null)
-                        continue;
-
-                    uint controllerIndex = _vrSystem.GetTrackedDeviceIndexForControllerRole(controller.Role);
-                    if (controllerIndex == Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid)
-                        continue;
-
-                    ProcessControllerInput(controller, controllerIndex, poses);
-                }
-
-                await System.Threading.Tasks.Task.Delay(10, token);
-            }
-        }, token);
+                new(_calibrationPositions[0].X, _calibrationPositions[0].Y, _calibrationPositions[0].Z),
+                new(_calibrationPositions[1].X, _calibrationPositions[1].Y, _calibrationPositions[1].Z),
+                new(_calibrationPositions[2].X, _calibrationPositions[2].Y, _calibrationPositions[2].Z)
+            };
+            _debug3DWindow?.UpdateVisualization(calibPositions, debugDataList);
+        }
     }
 
     /// <summary>
     /// Processes input from a single controller and updates its virtual controller.
-    /// Uses the shared calibration data for screen coordinate calculation.
+    /// Uses the shared calibration data for screen coordinate calculation and IVRInput actions for buttons/axes.
+    /// Returns debug data for visualization.
     /// </summary>
-    private void ProcessControllerInput(ControllerState controller, uint controllerIndex, Valve.VR.TrackedDevicePose_t[] poses)
+    private ControllerDebugData? ProcessControllerInput(ControllerState controller, uint controllerIndex, Valve.VR.TrackedDevicePose_t[] poses, Valve.VR.CVRInput input)
     {
-        Valve.VR.VRControllerState_t state = new Valve.VR.VRControllerState_t();
-        
-        // Get all button states
+        // Per-hand input source handle
+        ulong sourceHandle = controller.Role == Valve.VR.ETrackedControllerRole.LeftHand
+            ? _leftHandHandle
+            : _rightHandHandle;
+
+        // Button states
         bool triggerPressed = false;
         bool gripPressed = false;
-        bool menuPressed = false;
-        bool trackpadPressed = false;
+        bool aPressed = false;
+        bool bPressed = false;
+        bool thumbstickPressed = false;
         bool trackpadTouched = false;
-        bool systemPressed = false;
-        if (_vrSystem!.GetControllerState(controllerIndex, ref state, (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.VRControllerState_t))))
-        {
-            const ulong triggerMask = 1UL << 33;
-            const ulong gripMask = 1UL << 2; // k_EButton_Grip = 2
-            const ulong menuMask = 1UL << 1; // k_EButton_ApplicationMenu = 1
-            const ulong trackpadMask = 1UL << 32; // k_EButton_SteamVR_Touchpad = 32
-            const ulong systemMask = 1UL << 0; // k_EButton_System = 0
+        
+        // Analog values
+        float triggerValue = 0f;
+        float gripValue = 0f;
+        float trackpadX = 0f, trackpadY = 0f;
+        float thumbstickX = 0f, thumbstickY = 0f;
 
-            triggerPressed = (state.ulButtonPressed & triggerMask) != 0;
-            gripPressed = (state.ulButtonPressed & gripMask) != 0;
-            menuPressed = (state.ulButtonPressed & menuMask) != 0;
-            trackpadPressed = (state.ulButtonPressed & trackpadMask) != 0;
-            systemPressed = (state.ulButtonPressed & systemMask) != 0;
-            trackpadTouched = (state.ulButtonTouched & trackpadMask) != 0;
+        // Read analog actions for this hand
+        var analog = new Valve.VR.InputAnalogActionData_t();
+
+        if (input.GetAnalogActionData(_triggerValueAction, ref analog,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputAnalogActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && analog.bActive)
+        {
+            triggerValue = analog.x;
+        }
+
+        analog = new Valve.VR.InputAnalogActionData_t();
+        if (input.GetAnalogActionData(_gripValueAction, ref analog,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputAnalogActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && analog.bActive)
+        {
+            gripValue = analog.x;
+        }
+
+        analog = new Valve.VR.InputAnalogActionData_t();
+        if (input.GetAnalogActionData(_thumbstickAction, ref analog,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputAnalogActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && analog.bActive)
+        {
+            thumbstickX = analog.x;
+            thumbstickY = analog.y;
+        }
+
+        analog = new Valve.VR.InputAnalogActionData_t();
+        if (input.GetAnalogActionData(_trackpadAction, ref analog,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputAnalogActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && analog.bActive)
+        {
+            trackpadX = analog.x;
+            trackpadY = analog.y;
+        }
+
+        // Read digital actions for this hand
+        var digital = new Valve.VR.InputDigitalActionData_t();
+
+        if (input.GetDigitalActionData(_triggerAction, ref digital,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputDigitalActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && digital.bActive)
+        {
+            triggerPressed = digital.bState;
+        }
+
+        digital = new Valve.VR.InputDigitalActionData_t();
+        if (input.GetDigitalActionData(_gripAction, ref digital,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputDigitalActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && digital.bActive)
+        {
+            gripPressed = digital.bState;
+        }
+
+        digital = new Valve.VR.InputDigitalActionData_t();
+        if (input.GetDigitalActionData(_aButtonAction, ref digital,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputDigitalActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && digital.bActive)
+        {
+            aPressed = digital.bState;
+        }
+
+        digital = new Valve.VR.InputDigitalActionData_t();
+        if (input.GetDigitalActionData(_bButtonAction, ref digital,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputDigitalActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && digital.bActive)
+        {
+            bPressed = digital.bState;
+        }
+
+        digital = new Valve.VR.InputDigitalActionData_t();
+        if (input.GetDigitalActionData(_thumbstickClickAction, ref digital,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputDigitalActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && digital.bActive)
+        {
+            thumbstickPressed = digital.bState;
+        }
+
+        digital = new Valve.VR.InputDigitalActionData_t();
+        if (input.GetDigitalActionData(_trackpadTouchAction, ref digital,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputDigitalActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && digital.bActive)
+        {
+            trackpadTouched = digital.bState;
         }
 
         var pose = poses[controllerIndex];
-        if (pose.bPoseIsValid)
+        if (!pose.bPoseIsValid)
+            return null;
+
+        var m = pose.mDeviceToAbsoluteTracking;
+
+        // Get current pointing direction with -45° pitch
+        var dir = GetPointingDirection(m);
+        var controllerPos = new Point3D(m.m3, m.m7, m.m11);
+
+        // Use ray-plane intersection to find screen coordinates
+        var TL = _calibrationPositions[0];
+        var TR = _calibrationPositions[1];
+        var BR = _calibrationPositions[2];
+
+        // Calculate screen axes from calibration positions
+        double screenXx = TR.X - TL.X;
+        double screenXy = TR.Y - TL.Y;
+        double screenXz = TR.Z - TL.Z;
+        
+        double blX = TL.X + (BR.X - TR.X);
+        double blY = TL.Y + (BR.Y - TR.Y);
+        double blZ = TL.Z + (BR.Z - TR.Z);
+        double screenYx = blX - TL.X;
+        double screenYy = blY - TL.Y;
+        double screenYz = blZ - TL.Z;
+
+        // Screen normal (cross product of X and Y axes)
+        double normalX = screenXy * screenYz - screenXz * screenYy;
+        double normalY = screenXz * screenYx - screenXx * screenYz;
+        double normalZ = screenXx * screenYy - screenXy * screenYx;
+
+        double denom = normalX * dir.X + normalY * dir.Y + normalZ * dir.Z;
+        
+        float xNorm = 0.5f, yNorm = 0.5f;
+        if (Math.Abs(denom) > 1e-9)
         {
-            var m = pose.mDeviceToAbsoluteTracking;
+            double toPlaneX = TL.X - controllerPos.X;
+            double toPlaneY = TL.Y - controllerPos.Y;
+            double toPlaneZ = TL.Z - controllerPos.Z;
+            double t = (normalX * toPlaneX + normalY * toPlaneY + normalZ * toPlaneZ) / denom;
 
-            // Get current pointing direction with -45° pitch
-            var dir = GetPointingDirection(m);
-            var controllerPos = new Point3D(m.m3, m.m7, m.m11);
-
-            // Use ray-plane intersection to find screen coordinates
-            // Use the shared calibration positions to define the screen plane: TL, TR, BR
-            var TL = _calibrationPositions[0];
-            var TR = _calibrationPositions[1];
-            var BR = _calibrationPositions[2];
-
-            // Calculate screen axes from calibration positions
-            // X axis: TL -> TR
-            double screenXx = TR.X - TL.X;
-            double screenXy = TR.Y - TL.Y;
-            double screenXz = TR.Z - TL.Z;
-            
-            // Y axis: TL -> BL (extrapolate BL = TL + (BR - TR))
-            double blX = TL.X + (BR.X - TR.X);
-            double blY = TL.Y + (BR.Y - TR.Y);
-            double blZ = TL.Z + (BR.Z - TR.Z);
-            double screenYx = blX - TL.X;
-            double screenYy = blY - TL.Y;
-            double screenYz = blZ - TL.Z;
-
-            // Screen normal (cross product of X and Y axes)
-            double normalX = screenXy * screenYz - screenXz * screenYy;
-            double normalY = screenXz * screenYx - screenXx * screenYz;
-            double normalZ = screenXx * screenYy - screenXy * screenYx;
-
-            // Ray-plane intersection: find t where (controllerPos + t * dir) hits the plane
-            // Plane equation: normal · (P - TL) = 0
-            // Substitute ray: normal · (controllerPos + t * dir - TL) = 0
-            // Solve for t: t = normal · (TL - controllerPos) / (normal · dir)
-            double denom = normalX * dir.X + normalY * dir.Y + normalZ * dir.Z;
-            
-            float xNorm = 0.5f, yNorm = 0.5f;
-            if (Math.Abs(denom) > 1e-9)
+            if (t > 0)
             {
-                double toPlaneX = TL.X - controllerPos.X;
-                double toPlaneY = TL.Y - controllerPos.Y;
-                double toPlaneZ = TL.Z - controllerPos.Z;
-                double t = (normalX * toPlaneX + normalY * toPlaneY + normalZ * toPlaneZ) / denom;
+                double hitX = controllerPos.X + t * dir.X;
+                double hitY = controllerPos.Y + t * dir.Y;
+                double hitZ = controllerPos.Z + t * dir.Z;
 
-                // Only use if ray goes forward (t > 0)
-                if (t > 0)
+                double offsetX = hitX - TL.X;
+                double offsetY = hitY - TL.Y;
+                double offsetZ = hitZ - TL.Z;
+
+                double screenXlen2 = screenXx * screenXx + screenXy * screenXy + screenXz * screenXz;
+                double screenYlen2 = screenYx * screenYx + screenYy * screenYy + screenYz * screenYz;
+
+                if (screenXlen2 > 1e-9 && screenYlen2 > 1e-9)
                 {
-                    // Hit point on the plane
-                    double hitX = controllerPos.X + t * dir.X;
-                    double hitY = controllerPos.Y + t * dir.Y;
-                    double hitZ = controllerPos.Z + t * dir.Z;
-
-                    // Convert hit point to screen UV coordinates
-                    // Offset from TL
-                    double offsetX = hitX - TL.X;
-                    double offsetY = hitY - TL.Y;
-                    double offsetZ = hitZ - TL.Z;
-
-                    // Project onto screen axes
-                    double screenXlen2 = screenXx * screenXx + screenXy * screenXy + screenXz * screenXz;
-                    double screenYlen2 = screenYx * screenYx + screenYy * screenYy + screenYz * screenYz;
-
-                    if (screenXlen2 > 1e-9 && screenYlen2 > 1e-9)
-                    {
-                        double dotX = offsetX * screenXx + offsetY * screenXy + offsetZ * screenXz;
-                        double dotY = offsetX * screenYx + offsetY * screenYy + offsetZ * screenYz;
-                        xNorm = (float)(dotX / screenXlen2);
-                        yNorm = (float)(dotY / screenYlen2);
-                    }
+                    double dotX = offsetX * screenXx + offsetY * screenXy + offsetZ * screenXz;
+                    double dotY = offsetX * screenYx + offsetY * screenYy + offsetZ * screenYz;
+                    xNorm = (float)(dotX / screenXlen2);
+                    yNorm = (float)(dotY / screenYlen2);
                 }
             }
-
-            // Clamp to [0,1]
-            xNorm = Math.Clamp(xNorm, 0f, 1f);
-            yNorm = Math.Clamp(yNorm, 0f, 1f);
-
-            // Map 0-1 to full stick range (-32768 to 32767)
-            // Invert Y so top of screen = top of stick
-            short stickX = (short)(xNorm * 65535 - 32768);
-            short stickY = (short)((1f - yNorm) * 65535 - 32768);
-
-            // Update debug text boxes on UI thread
-            Dispatcher.Invoke(() =>
-            {
-                if (controller.Role == Valve.VR.ETrackedControllerRole.LeftHand)
-                {
-                    DebugLeftXBox.Text = xNorm.ToString("F3");
-                    DebugLeftYBox.Text = yNorm.ToString("F3");
-                }
-                else
-                {
-                    DebugXBox.Text = xNorm.ToString("F3");
-                    DebugYBox.Text = yNorm.ToString("F3");
-                }
-
-                // Update 3D debug window (show primary controller only)
-                if (_debug3DWindow != null && controller == _primaryController)
-                {
-                    var controllerPos3D = new System.Windows.Media.Media3D.Point3D(m.m3, m.m7, m.m11);
-                    var pointingDir = new System.Windows.Media.Media3D.Vector3D(dir.X, dir.Y, dir.Z);
-                    var calibPositions = new System.Windows.Media.Media3D.Point3D[]
-                    {
-                        new System.Windows.Media.Media3D.Point3D(_calibrationPositions[0].X, _calibrationPositions[0].Y, _calibrationPositions[0].Z),
-                        new System.Windows.Media.Media3D.Point3D(_calibrationPositions[1].X, _calibrationPositions[1].Y, _calibrationPositions[1].Z),
-                        new System.Windows.Media.Media3D.Point3D(_calibrationPositions[2].X, _calibrationPositions[2].Y, _calibrationPositions[2].Z)
-                    };
-                    _debug3DWindow.UpdateVisualization(calibPositions, pointingDir, controllerPos3D, xNorm, yNorm);
-                }
-            });
-
-            // Apply absolute position to left stick
-            controller.VirtualController!.SetAxisValue(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Axis.LeftThumbX, stickX);
-            controller.VirtualController.SetAxisValue(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Axis.LeftThumbY, stickY);
-
-            // Map VR buttons to Xbox 360 buttons
-            controller.VirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.A, triggerPressed); // Trigger
-            controller.VirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.B, gripPressed); // Grip
-            controller.VirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.X, menuPressed); // Menu
-            controller.VirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Y, trackpadPressed); // Touchpad press
-            controller.VirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Start, systemPressed); // System
-            controller.VirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Back, trackpadTouched); // Touchpad touch
-
-            controller.VirtualController.SubmitReport();
         }
+
+        xNorm = Math.Clamp(xNorm, 0f, 1f);
+        yNorm = Math.Clamp(yNorm, 0f, 1f);
+
+        short stickX = (short)(xNorm * 65535 - 32768);
+        short stickY = (short)((1f - yNorm) * 65535 - 32768);
+
+        // Update debug text boxes on UI thread
+        Dispatcher.Invoke(() =>
+        {
+            if (controller.Role == Valve.VR.ETrackedControllerRole.LeftHand)
+            {
+                DebugLeftXBox.Text = xNorm.ToString("F3");
+                DebugLeftYBox.Text = yNorm.ToString("F3");
+            }
+            else
+            {
+                DebugXBox.Text = xNorm.ToString("F3");
+                DebugYBox.Text = yNorm.ToString("F3");
+            }
+        });
+
+        // Apply absolute position to left stick (screen aiming)
+        controller.VirtualController!.SetAxisValue(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Axis.LeftThumbX, stickX);
+        controller.VirtualController.SetAxisValue(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Axis.LeftThumbY, stickY);
+
+        // Map thumbstick to right stick
+        short rightStickX = (short)(Math.Clamp(thumbstickX, -1f, 1f) * 32767);
+        short rightStickY = (short)(Math.Clamp(thumbstickY, -1f, 1f) * 32767);
+        controller.VirtualController.SetAxisValue(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Axis.RightThumbX, rightStickX);
+        controller.VirtualController.SetAxisValue(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Axis.RightThumbY, rightStickY);
+
+        // Map touchpad to D-Pad (cardinal directions when touched)
+        bool dpadUp = trackpadTouched && trackpadY > 0.5f;
+        bool dpadDown = trackpadTouched && trackpadY < -0.5f;
+        bool dpadLeft = trackpadTouched && trackpadX < -0.5f;
+        bool dpadRight = trackpadTouched && trackpadX > 0.5f;
+        controller.VirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Up, dpadUp);
+        controller.VirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Down, dpadDown);
+        controller.VirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Left, dpadLeft);
+        controller.VirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Right, dpadRight);
+
+        // Map triggers: primary trigger -> right trigger, grip -> left trigger
+        byte rightTrigger = (byte)(Math.Clamp(triggerValue, 0f, 1f) * 255f);
+        byte leftTrigger = (byte)(Math.Clamp(gripValue, 0f, 1f) * 255f);
+        controller.VirtualController.SetSliderValue(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Slider.RightTrigger, rightTrigger);
+        controller.VirtualController.SetSliderValue(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Slider.LeftTrigger, leftTrigger);
+
+        // Map VR buttons to Xbox 360 buttons
+        controller.VirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.A, aPressed);
+        controller.VirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.B, bPressed);
+        controller.VirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.X, gripPressed);
+        controller.VirtualController.SetButtonState(
+            Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Y,
+            trackpadTouched && Math.Abs(trackpadX) < 0.5f && Math.Abs(trackpadY) < 0.5f);
+
+        // Thumbstick click -> right stick click
+        controller.VirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.RightThumb, thumbstickPressed);
+
+        // Shoulders / start / back can be assigned later if needed
+        controller.VirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.LeftShoulder, false);
+        controller.VirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.RightShoulder, false);
+        controller.VirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Start, false);
+        controller.VirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Back, false);
+
+        controller.VirtualController.SubmitReport();
+
+        // Return debug data for visualization
+        return new ControllerDebugData
+        {
+            Name = controller.Name,
+            Position = new System.Windows.Media.Media3D.Point3D(controllerPos.X, controllerPos.Y, controllerPos.Z),
+            Direction = new System.Windows.Media.Media3D.Vector3D(dir.X, dir.Y, dir.Z),
+            XNorm = xNorm,
+            YNorm = yNorm,
+            Color = controller.DebugColor
+        };
     }
 
     /// <summary>

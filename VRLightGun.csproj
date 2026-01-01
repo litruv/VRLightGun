@@ -15,4 +15,16 @@
     <Reference Include="System.Windows.Forms" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="knucklegun.vrmanifest">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="actions.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="bindings_knuckles.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

@@ -1,0 +1,77 @@
+{
+  "default_bindings": [
+    {
+      "controller_type": "knuckles",
+      "binding_url": "bindings_knuckles.json"
+    }
+  ],
+  "actions": [
+    {
+      "name": "/actions/main/in/Trigger",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/TriggerValue",
+      "type": "vector1"
+    },
+    {
+      "name": "/actions/main/in/Grip",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/GripValue",
+      "type": "vector1"
+    },
+    {
+      "name": "/actions/main/in/AButton",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/BButton",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/Thumbstick",
+      "type": "vector2"
+    },
+    {
+      "name": "/actions/main/in/ThumbstickClick",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/Trackpad",
+      "type": "vector2"
+    },
+    {
+      "name": "/actions/main/in/TrackpadTouch",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/Pose",
+      "type": "pose"
+    }
+  ],
+  "action_sets": [
+    {
+      "name": "/actions/main",
+      "usage": "leftright"
+    }
+  ],
+  "localization": [
+    {
+      "language_tag": "en_US",
+      "/actions/main": "Main Actions",
+      "/actions/main/in/Trigger": "Trigger",
+      "/actions/main/in/TriggerValue": "Trigger Value",
+      "/actions/main/in/Grip": "Grip",
+      "/actions/main/in/GripValue": "Grip Value",
+      "/actions/main/in/AButton": "A Button",
+      "/actions/main/in/BButton": "B Button",
+      "/actions/main/in/Thumbstick": "Thumbstick",
+      "/actions/main/in/ThumbstickClick": "Thumbstick Click",
+      "/actions/main/in/Trackpad": "Trackpad",
+      "/actions/main/in/TrackpadTouch": "Trackpad Touch",
+      "/actions/main/in/Pose": "Controller Pose"
+    }
+  ]
+}
