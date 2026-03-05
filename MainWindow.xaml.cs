@@ -1219,13 +1219,11 @@ public partial class MainWindow : Window
                 rightThumbTouching = rightData.Value.thumbTouching;
                 rightGyro = rightData.Value.angularVelocity;
 
-                // Right trackpad contributes to D-pad
+                // Right trackpad: up/down only (left/right reserved for left controller)
                 if (rightData.Value.trackpadTouched)
                 {
                     if (rightData.Value.trackpadY > 0.5f) dpadUp = true;
                     if (rightData.Value.trackpadY < -0.5f) dpadDown = true;
-                    if (rightData.Value.trackpadX < -0.5f) dpadLeft = true;
-                    if (rightData.Value.trackpadX > 0.5f) dpadRight = true;
                 }
             }
         }
@@ -1336,11 +1334,11 @@ public partial class MainWindow : Window
         _sharedVirtualController.SetAxisValue(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Axis.RightThumbX, rightStickXShort);
         _sharedVirtualController.SetAxisValue(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Axis.RightThumbY, rightStickYShort);
 
-        // Set D-pad
-        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Up, dpadUp);
-        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Down, dpadDown);
+        // Set D-pad (left/right only) — up/down remap to Start/Back
         _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Left, dpadLeft);
         _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Right, dpadRight);
+        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Start, dpadUp);
+        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Back, dpadDown);
 
         // Set triggers (only from trigger, not grip)
         byte leftTriggerByte = (byte)(Math.Clamp(leftTriggerValue, 0f, 1f) * 255f);
@@ -1359,10 +1357,6 @@ public partial class MainWindow : Window
         // Shoulders (grip buttons when squeezed past 0.25)
         _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.LeftShoulder, leftGripValue > 0.25f);
         _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.RightShoulder, rightGripValue > 0.25f);
-
-        // Start / Back
-        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Start, false);
-        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Back, false);
 
         _sharedVirtualController.SubmitReport();
     }
