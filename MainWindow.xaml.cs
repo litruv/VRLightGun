@@ -93,6 +93,8 @@ public partial class MainWindow : Window
     private float _gyroDeadzone = 0.05f;
     private float _gyroScale = 0.5f;
     private float _leftOrientScale = 0.5f;
+    private bool _leftOrientEnabled = true;
+    private bool _rightGyroEnabled = true;
 
     // Left controller orientation-based stick: reference pose captured on thumb touch start
     private Valve.VR.HmdMatrix34_t? _leftGyroRefMatrix = null;
@@ -124,6 +126,10 @@ public partial class MainWindow : Window
         GyroDeadzoneSlider.ValueChanged += GyroDeadzoneSlider_ValueChanged;
         GyroScaleSlider.ValueChanged += GyroScaleSlider_ValueChanged;
         LeftOrientScaleSlider.ValueChanged += LeftOrientScaleSlider_ValueChanged;
+        LeftOrientEnabledCheck.Checked   += (_, _) => { _leftOrientEnabled = true;  SaveCalibration(); };
+        LeftOrientEnabledCheck.Unchecked += (_, _) => { _leftOrientEnabled = false; SaveCalibration(); };
+        RightGyroEnabledCheck.Checked    += (_, _) => { _rightGyroEnabled = true;   SaveCalibration(); };
+        RightGyroEnabledCheck.Unchecked  += (_, _) => { _rightGyroEnabled = false;  SaveCalibration(); };
         
         StartAxisDebugTimer();
     }
@@ -1236,8 +1242,7 @@ public partial class MainWindow : Window
         
         // Apply gyro based on which controller has capacitive touch active
         // Left controller: orientation delta from reference pose captured on touch start.
-        // Tilting the controller relative to its neutral position drives the stick directly.
-        if (leftThumbTouching && leftIndex != Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid && poses[leftIndex].bPoseIsValid)
+        if (_leftOrientEnabled && leftThumbTouching && leftIndex != Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid && poses[leftIndex].bPoseIsValid)
         {
             // Capture reference orientation the moment the thumb touches
             if (!_leftWasTouching)
@@ -1294,16 +1299,16 @@ public partial class MainWindow : Window
                 _dbgLeftStickY = leftStickY;
             }
         }
-        else if (!leftThumbTouching)
+        else if (!leftThumbTouching || !_leftOrientEnabled)
         {
-            // Reset reference when thumb lifts so next touch starts fresh
+            // Reset reference when thumb lifts or feature is disabled
             _leftGyroRefMatrix = null;
             _dbgLeftStickX = _dbgLeftStickY = 0f;
         }
         _leftWasTouching = leftThumbTouching;
 
         // Right gyro: direct velocity → stick (great for aiming)
-        if (rightThumbTouching)
+        if (_rightGyroEnabled && rightThumbTouching)
         {
             float gyroX = (float)rightGyro.X;
             float gyroY = (float)rightGyro.Y;
@@ -1572,7 +1577,9 @@ public partial class MainWindow : Window
                 StickDeadzone = _stickDeadzone,
                 GyroDeadzone = _gyroDeadzone,
                 GyroScale = _gyroScale,
-                LeftOrientScale = _leftOrientScale
+                LeftOrientScale = _leftOrientScale,
+                LeftOrientEnabled = _leftOrientEnabled,
+                RightGyroEnabled = _rightGyroEnabled
             };
             var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
             System.IO.File.WriteAllText(GetCalibrationFilePath(), json);
@@ -1621,11 +1628,15 @@ public partial class MainWindow : Window
                 _gyroDeadzone = data.GyroDeadzone;
                 _gyroScale = data.GyroScale;
                 _leftOrientScale = data.LeftOrientScale;
+                _leftOrientEnabled = data.LeftOrientEnabled;
+                _rightGyroEnabled = data.RightGyroEnabled;
                 
                 StickDeadzoneSlider.Value = _stickDeadzone;
                 GyroDeadzoneSlider.Value = _gyroDeadzone;
                 GyroScaleSlider.Value = _gyroScale;
                 LeftOrientScaleSlider.Value = _leftOrientScale;
+                LeftOrientEnabledCheck.IsChecked = _leftOrientEnabled;
+                RightGyroEnabledCheck.IsChecked = _rightGyroEnabled;
                 StickDeadzoneValue.Text = _stickDeadzone.ToString("F2");
                 GyroDeadzoneValue.Text = _gyroDeadzone.ToString("F2");
                 GyroScaleValue.Text = _gyroScale.ToString("F2");
@@ -1665,6 +1676,8 @@ public partial class MainWindow : Window
         public float GyroDeadzone { get; set; } = 0.05f;
         public float GyroScale { get; set; } = 0.5f;
         public float LeftOrientScale { get; set; } = 0.5f;
+        public bool LeftOrientEnabled { get; set; } = true;
+        public bool RightGyroEnabled { get; set; } = true;
     }
 
     private struct Point3D

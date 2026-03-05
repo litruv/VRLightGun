@@ -34,7 +34,10 @@
 
                 <TextBlock Text="Left Orient Sensitivity" FontSize="11" Margin="0,4,0,2"/>
                 <Slider x:Name="LeftOrientScaleSlider" Minimum="0.1" Maximum="4.0" Value="0.5" Width="250" HorizontalAlignment="Left"/>
-                <TextBlock x:Name="LeftOrientScaleValue" Text="0.50" FontSize="10" Foreground="Gray"/>
+                <TextBlock x:Name="LeftOrientScaleValue" Text="0.50" FontSize="10" Foreground="Gray" Margin="0,0,0,8"/>
+
+                <CheckBox x:Name="LeftOrientEnabledCheck" Content="Enable Left Orient Stick" IsChecked="True" Margin="0,4,0,4"/>
+                <CheckBox x:Name="RightGyroEnabledCheck" Content="Enable Right Gyro" IsChecked="True" Margin="0,0,0,4"/>
             </StackPanel>
             
             <StackPanel x:Name="CalibrationSection" Margin="0,0,0,0">
