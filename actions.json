@@ -27,7 +27,15 @@
       "type": "boolean"
     },
     {
+      "name": "/actions/main/in/AButtonTouch",
+      "type": "boolean"
+    },
+    {
       "name": "/actions/main/in/BButton",
+      "type": "boolean"
+    },
+    {
+      "name": "/actions/main/in/BButtonTouch",
       "type": "boolean"
     },
     {
@@ -66,7 +74,9 @@
       "/actions/main/in/Grip": "Grip",
       "/actions/main/in/GripValue": "Grip Value",
       "/actions/main/in/AButton": "A Button",
+      "/actions/main/in/AButtonTouch": "A Button Touch",
       "/actions/main/in/BButton": "B Button",
+      "/actions/main/in/BButtonTouch": "B Button Touch",
       "/actions/main/in/Thumbstick": "Thumbstick",
       "/actions/main/in/ThumbstickClick": "Thumbstick Click",
       "/actions/main/in/Trackpad": "Trackpad",

@@ -80,6 +80,9 @@
           "inputs": {
             "click": {
               "output": "/actions/main/in/AButton"
+            },
+            "touch": {
+              "output": "/actions/main/in/AButtonTouch"
             }
           }
         },
@@ -89,6 +92,9 @@
           "inputs": {
             "click": {
               "output": "/actions/main/in/AButton"
+            },
+            "touch": {
+              "output": "/actions/main/in/AButtonTouch"
             }
           }
         },
@@ -98,6 +104,9 @@
           "inputs": {
             "click": {
               "output": "/actions/main/in/BButton"
+            },
+            "touch": {
+              "output": "/actions/main/in/BButtonTouch"
             }
           }
         },
@@ -107,6 +116,9 @@
           "inputs": {
             "click": {
               "output": "/actions/main/in/BButton"
+            },
+            "touch": {
+              "output": "/actions/main/in/BButtonTouch"
             }
           }
         },

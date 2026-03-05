@@ -23,22 +23,26 @@ public partial class App : System.Windows.Application
         _mainWindow.ShowInTaskbar = false;
 
         _trayIcon = new NotifyIcon();
-        _trayIcon.Icon = SystemIcons.Application;
+        var iconStream = GetResourceStream(new Uri("bear.ico", UriKind.Relative))?.Stream;
+        _trayIcon.Icon = iconStream != null ? new Icon(iconStream) : SystemIcons.Application;
         _trayIcon.Visible = true;
         _trayIcon.Text = "VR Light Gun";
 
         var contextMenu = new ContextMenuStrip();
         var showItem = new ToolStripMenuItem("Show Window");
-        showItem.Click += (s, ev) => ShowMainWindow();
+        showItem.Click += (s, ev) => { System.Diagnostics.Debug.WriteLine("[ShowWindow] Clicked"); ShowMainWindow(); };
         var debugItem = new ToolStripMenuItem("Debug View");
-        debugItem.Click += (s, ev) => _mainWindow?.ToggleDebugWindow();
+        debugItem.Click += (s, ev) => { System.Diagnostics.Debug.WriteLine("[DebugView] Clicked"); _mainWindow?.ToggleDebugWindow(); };
         var exitItem = new ToolStripMenuItem("Exit");
-        exitItem.Click += (s, ev) => ExitApp();
+        exitItem.Click += (s, ev) => { System.Diagnostics.Debug.WriteLine("[Exit] Clicked"); ExitApp(); };
         contextMenu.Items.Add(showItem);
         contextMenu.Items.Add(debugItem);
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add(exitItem);
         _trayIcon.ContextMenuStrip = contextMenu;
+        
+        contextMenu.Opening += (s, ev) => System.Diagnostics.Debug.WriteLine("[ContextMenu] Opening");
+        contextMenu.Closing += (s, ev) => System.Diagnostics.Debug.WriteLine("[ContextMenu] Closing");
 
         _trayIcon.DoubleClick += (s, ev) => ShowMainWindow();
     }
@@ -55,6 +59,7 @@ public partial class App : System.Windows.Application
 
     private void ExitApp()
     {
+        System.Diagnostics.Debug.WriteLine("[ExitApp] Called");
         _trayIcon?.Dispose();
         _mainWindow?.Close();
         Shutdown();
@@ -62,6 +67,7 @@ public partial class App : System.Windows.Application
 
     protected override void OnExit(System.Windows.ExitEventArgs e)
     {
+        System.Diagnostics.Debug.WriteLine("[OnExit] Called");
         _trayIcon?.Dispose();
         base.OnExit(e);
     }

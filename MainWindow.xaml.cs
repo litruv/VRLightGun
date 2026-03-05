@@ -27,6 +27,15 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Controller operation mode.
+    /// </summary>
+    private enum ControllerMode
+    {
+        LightGun,
+        SplitXboxController
+    }
+
+    /// <summary>
     /// Represents the state of a single controller (left or right hand).
     /// </summary>
     private class ControllerState
@@ -66,6 +75,7 @@ public partial class MainWindow : Window
     private ulong _triggerAction, _triggerValueAction;
     private ulong _gripAction, _gripValueAction;
     private ulong _aButtonAction, _bButtonAction;
+    private ulong _aButtonTouchAction, _bButtonTouchAction;
     private ulong _thumbstickAction, _thumbstickClickAction;
     private ulong _trackpadAction, _trackpadTouchAction;
     private ulong _poseAction;
@@ -73,6 +83,26 @@ public partial class MainWindow : Window
 
     // ViGEm fields
     private Nefarius.ViGEm.Client.ViGEmClient? _vigemClient;
+    private Nefarius.ViGEm.Client.Targets.IXbox360Controller? _sharedVirtualController;
+
+    // Controller mode
+    private ControllerMode _currentMode = ControllerMode.LightGun;
+    
+    // Split controller mode settings
+    private float _stickDeadzone = 0.1f;
+    private float _gyroDeadzone = 0.05f;
+    private float _gyroScale = 0.5f;
+    private float _leftOrientScale = 0.5f;
+
+    // Left controller orientation-based stick: reference pose captured on thumb touch start
+    private Valve.VR.HmdMatrix34_t? _leftGyroRefMatrix = null;
+    private bool _leftWasTouching = false;
+
+    // Live debug values for left orientation stick
+    private float _dbgLeftStickX, _dbgLeftStickY;
+    
+    // Flag to prevent double-initialization during load
+    private bool _isSwitchingModes = false;
 
     // 3D Debug window
     private Debug3DWindow? _debug3DWindow;
@@ -87,6 +117,14 @@ public partial class MainWindow : Window
         this.Closing += MainWindow_Closing;
         
         LoadCalibration();
+        
+        // Wire up save-triggering events AFTER loading so XAML init doesn't cause spurious saves
+        ControllerModeComboBox.SelectionChanged += ControllerModeComboBox_SelectionChanged;
+        StickDeadzoneSlider.ValueChanged += StickDeadzoneSlider_ValueChanged;
+        GyroDeadzoneSlider.ValueChanged += GyroDeadzoneSlider_ValueChanged;
+        GyroScaleSlider.ValueChanged += GyroScaleSlider_ValueChanged;
+        LeftOrientScaleSlider.ValueChanged += LeftOrientScaleSlider_ValueChanged;
+        
         StartAxisDebugTimer();
     }
 
@@ -159,7 +197,9 @@ public partial class MainWindow : Window
                 $"Trigger: {triggerData.x:F2} err={triggerErr} active={triggerData.bActive}\n" +
                 $"Grip: {gripData.x:F2} err={gripErr} active={gripData.bActive}\n" +
                 $"TrigBtn: state={(triggerBtn.bState ? "1" : "0")} active={triggerBtn.bActive} err={trigBtnErr}  A:{(aBtn.bState ? "1" : "0")} B:{(bBtn.bState ? "1" : "0")}\n" +
-                $"Handles: AS={_actionSetHandle} TS={_thumbstickAction}";
+                $"Handles: AS={_actionSetHandle} TS={_thumbstickAction}\n" +
+                $"--- Left orient-stick (touch thumb to show) ---\n" +
+                $"StickX:{_dbgLeftStickX,7:F3}  StickY:{_dbgLeftStickY,7:F3}";
         };
         _axisDebugTimer.Start();
     }
@@ -196,17 +236,135 @@ public partial class MainWindow : Window
 
     private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        System.Diagnostics.Debug.WriteLine($"[MainWindow_Closing] Called. ShutdownMode={System.Windows.Application.Current?.ShutdownMode}");
+        
         // Hide instead of close, unless app is shutting down
         if (System.Windows.Application.Current?.ShutdownMode != ShutdownMode.OnExplicitShutdown)
         {
+            System.Diagnostics.Debug.WriteLine("[MainWindow_Closing] Hiding window (not shutting down)");
             e.Cancel = true;
             this.Hide();
             this.ShowInTaskbar = false;
+            return;
         }
+
+        // Only run cleanup if actually shutting down
+        System.Diagnostics.Debug.WriteLine("[MainWindow_Closing] Running cleanup (shutting down)");
         _pollingCts?.Cancel();
         _emulationTimer?.Stop();
         _axisDebugTimer?.Stop();
+        CleanupVirtualControllers();
         _vrSystem = null;
+    }
+
+    /// <summary>
+    /// Handles controller mode selection changes.
+    /// </summary>
+    private void ControllerModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ModeDescription == null || CalibrationInstructions == null)
+            return;
+
+        System.Diagnostics.Debug.WriteLine($"[ControllerModeComboBox_SelectionChanged] Index={ControllerModeComboBox.SelectedIndex}");
+
+        bool wasRunning = _emulationTimer != null && _emulationTimer.IsEnabled;
+
+        if (ControllerModeComboBox.SelectedIndex == 0)
+        {
+            _currentMode = ControllerMode.LightGun;
+            ModeDescription.Text = "Point controllers at screen to aim. Each controller gets its own virtual Xbox controller.";
+            SplitModeSettings.Visibility = Visibility.Collapsed;
+            CalibrationSection.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            _currentMode = ControllerMode.SplitXboxController;
+            ModeDescription.Text = "Both controllers control one Xbox controller. Left controller → left stick, right controller → right stick. Gyro active when touching A/B/trackpad.";
+            SplitModeSettings.Visibility = Visibility.Visible;
+            CalibrationSection.Visibility = Visibility.Collapsed;
+        }
+
+        if (wasRunning)
+        {
+            _isSwitchingModes = true;
+            _emulationTimer!.Stop();
+            CleanupVirtualControllers();
+            
+            var restartTimer = new System.Windows.Threading.DispatcherTimer();
+            restartTimer.Interval = TimeSpan.FromSeconds(1);
+            restartTimer.Tick += (s, evt) =>
+            {
+                restartTimer.Stop();
+                _isSwitchingModes = false;
+                if (InitOpenVR())
+                    StartViGEmEmulation();
+            };
+            restartTimer.Start();
+        }
+        else if (_currentMode == ControllerMode.SplitXboxController)
+        {
+            if (InitOpenVR())
+                StartViGEmEmulation();
+        }
+        
+        SaveCalibration();
+    }
+
+    private void StickDeadzoneSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        _stickDeadzone = (float)e.NewValue;
+        if (StickDeadzoneValue != null)
+            StickDeadzoneValue.Text = _stickDeadzone.ToString("F2");
+        SaveCalibration();
+    }
+
+    private void GyroDeadzoneSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        _gyroDeadzone = (float)e.NewValue;
+        if (GyroDeadzoneValue != null)
+            GyroDeadzoneValue.Text = _gyroDeadzone.ToString("F2");
+        SaveCalibration();
+    }
+
+    private void GyroScaleSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        _gyroScale = (float)e.NewValue;
+        if (GyroScaleValue != null)
+            GyroScaleValue.Text = _gyroScale.ToString("F2");
+        SaveCalibration();
+    }
+
+    /// <summary>
+    /// Handles left orientation sensitivity slider changes.
+    /// </summary>
+    private void LeftOrientScaleSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        _leftOrientScale = (float)e.NewValue;
+        if (LeftOrientScaleValue != null)
+            LeftOrientScaleValue.Text = _leftOrientScale.ToString("F2");
+        SaveCalibration();
+    }
+
+    /// <summary>
+    /// Cleans up all virtual controllers.
+    /// </summary>
+    private void CleanupVirtualControllers()
+    {
+        if (_leftHand.VirtualController != null)
+        {
+            try { _leftHand.VirtualController.Disconnect(); } catch { }
+            _leftHand.VirtualController = null;
+        }
+        if (_rightHand.VirtualController != null)
+        {
+            try { _rightHand.VirtualController.Disconnect(); } catch { }
+            _rightHand.VirtualController = null;
+        }
+        if (_sharedVirtualController != null)
+        {
+            try { _sharedVirtualController.Disconnect(); } catch { }
+            _sharedVirtualController = null;
+        }
     }
 
     /// <summary>
@@ -224,34 +382,85 @@ public partial class MainWindow : Window
 
         uint leftIndex = _vrSystem.GetTrackedDeviceIndexForControllerRole(Valve.VR.ETrackedControllerRole.LeftHand);
         uint rightIndex = _vrSystem.GetTrackedDeviceIndexForControllerRole(Valve.VR.ETrackedControllerRole.RightHand);
+        
+        System.Diagnostics.Debug.WriteLine($"[UpdateControllerAvailability] LeftIdx={leftIndex}, RightIdx={rightIndex}, Mode={_currentMode}");
 
         bool leftWasAvailable = _leftHand.IsAvailable;
         bool rightWasAvailable = _rightHand.IsAvailable;
 
         _leftHand.IsAvailable = leftIndex != Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid;
         _rightHand.IsAvailable = rightIndex != Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid;
+        
+        System.Diagnostics.Debug.WriteLine($"[UpdateControllerAvailability] Left={_leftHand.IsAvailable}, Right={_rightHand.IsAvailable}");
 
-        // Manage virtual controllers based on availability
-        if (_leftHand.IsAvailable && !leftWasAvailable && _vigemClient != null)
+        // Manage virtual controllers based on mode and availability
+        if (_currentMode == ControllerMode.SplitXboxController)
         {
-            _leftHand.VirtualController = _vigemClient.CreateXbox360Controller();
-            _leftHand.VirtualController.Connect();
-        }
-        else if (!_leftHand.IsAvailable && leftWasAvailable && _leftHand.VirtualController != null)
-        {
-            try { _leftHand.VirtualController.Disconnect(); } catch { }
-            _leftHand.VirtualController = null;
-        }
+            // In split mode, use a single shared controller
+            bool anyAvailable = _leftHand.IsAvailable || _rightHand.IsAvailable;
 
-        if (_rightHand.IsAvailable && !rightWasAvailable && _vigemClient != null)
-        {
-            _rightHand.VirtualController = _vigemClient.CreateXbox360Controller();
-            _rightHand.VirtualController.Connect();
+            // Create shared controller if any controller is available and we don't have one yet
+            if (anyAvailable && _sharedVirtualController == null && _vigemClient != null)
+            {
+                System.Diagnostics.Debug.WriteLine("[UpdateControllerAvailability] Creating shared virtual controller");
+                _sharedVirtualController = _vigemClient.CreateXbox360Controller();
+                _sharedVirtualController.Connect();
+            }
+            else if (!anyAvailable && _sharedVirtualController != null)
+            {
+                System.Diagnostics.Debug.WriteLine("[UpdateControllerAvailability] Disconnecting shared virtual controller");
+                try { _sharedVirtualController.Disconnect(); } catch { }
+                _sharedVirtualController = null;
+            }
+
+            // Clear individual controllers in split mode
+            if (_leftHand.VirtualController != null)
+            {
+                try { _leftHand.VirtualController.Disconnect(); } catch { }
+                _leftHand.VirtualController = null;
+            }
+            if (_rightHand.VirtualController != null)
+            {
+                try { _rightHand.VirtualController.Disconnect(); } catch { }
+                _rightHand.VirtualController = null;
+            }
         }
-        else if (!_rightHand.IsAvailable && rightWasAvailable && _rightHand.VirtualController != null)
+        else
         {
-            try { _rightHand.VirtualController.Disconnect(); } catch { }
-            _rightHand.VirtualController = null;
+            // In light gun mode, each controller gets its own virtual controller
+            if (_leftHand.IsAvailable && _leftHand.VirtualController == null && _vigemClient != null)
+            {
+                System.Diagnostics.Debug.WriteLine("[UpdateControllerAvailability] Creating left virtual controller");
+                _leftHand.VirtualController = _vigemClient.CreateXbox360Controller();
+                _leftHand.VirtualController.Connect();
+            }
+            else if (!_leftHand.IsAvailable && _leftHand.VirtualController != null)
+            {
+                System.Diagnostics.Debug.WriteLine("[UpdateControllerAvailability] Disconnecting left virtual controller");
+                try { _leftHand.VirtualController.Disconnect(); } catch { }
+                _leftHand.VirtualController = null;
+            }
+
+            if (_rightHand.IsAvailable && _rightHand.VirtualController == null && _vigemClient != null)
+            {
+                System.Diagnostics.Debug.WriteLine("[UpdateControllerAvailability] Creating right virtual controller");
+                _rightHand.VirtualController = _vigemClient.CreateXbox360Controller();
+                _rightHand.VirtualController.Connect();
+            }
+            else if (!_rightHand.IsAvailable && _rightHand.VirtualController != null)
+            {
+                System.Diagnostics.Debug.WriteLine("[UpdateControllerAvailability] Disconnecting right virtual controller");
+                try { _rightHand.VirtualController.Disconnect(); } catch { }
+                _rightHand.VirtualController = null;
+            }
+
+            // Clear shared controller in light gun mode
+            if (_sharedVirtualController != null)
+            {
+                System.Diagnostics.Debug.WriteLine("[UpdateControllerAvailability] Disconnecting shared virtual controller in light gun mode");
+                try { _sharedVirtualController.Disconnect(); } catch { }
+                _sharedVirtualController = null;
+            }
         }
 
         UpdateControllerStatusUI();
@@ -262,17 +471,20 @@ public partial class MainWindow : Window
     /// </summary>
     private void UpdateControllerStatusUI()
     {
-        var parts = new List<string>();
-        if (_leftHand.IsAvailable) parts.Add("Left Hand");
-        if (_rightHand.IsAvailable) parts.Add("Right Hand");
+        Dispatcher.Invoke(() =>
+        {
+            var parts = new List<string>();
+            if (_leftHand.IsAvailable) parts.Add("Left Hand");
+            if (_rightHand.IsAvailable) parts.Add("Right Hand");
 
-        if (parts.Count == 0)
-            ControllerStatusText.Text = "No controllers detected";
-        else
-            ControllerStatusText.Text = $"Active: {string.Join(", ", parts)}";
+            if (parts.Count == 0)
+                ControllerStatusText.Text = "No controllers detected";
+            else
+                ControllerStatusText.Text = $"Active: {string.Join(", ", parts)}";
 
-        LeftHandDebugPanel.Visibility = _leftHand.IsAvailable ? Visibility.Visible : Visibility.Collapsed;
-        RightHandDebugPanel.Visibility = _rightHand.IsAvailable ? Visibility.Visible : Visibility.Collapsed;
+            LeftHandDebugPanel.Visibility = _leftHand.IsAvailable ? Visibility.Visible : Visibility.Collapsed;
+            RightHandDebugPanel.Visibility = _rightHand.IsAvailable ? Visibility.Visible : Visibility.Collapsed;
+        });
     }
 
     /// <summary>
@@ -396,7 +608,9 @@ public partial class MainWindow : Window
         input.GetActionHandle("/actions/main/in/Grip", ref _gripAction);
         input.GetActionHandle("/actions/main/in/GripValue", ref _gripValueAction);
         input.GetActionHandle("/actions/main/in/AButton", ref _aButtonAction);
+        input.GetActionHandle("/actions/main/in/AButtonTouch", ref _aButtonTouchAction);
         input.GetActionHandle("/actions/main/in/BButton", ref _bButtonAction);
+        input.GetActionHandle("/actions/main/in/BButtonTouch", ref _bButtonTouchAction);
         
         var eThumb = input.GetActionHandle("/actions/main/in/Thumbstick", ref _thumbstickAction);
         if (eThumb != Valve.VR.EVRInputError.None) errors.Add($"Thumbstick: {eThumb}");
@@ -640,18 +854,27 @@ public partial class MainWindow : Window
 
         var debugDataList = new List<ControllerDebugData>();
 
-        foreach (var controller in new[] { _leftHand, _rightHand })
+        if (_currentMode == ControllerMode.SplitXboxController)
         {
-            if (!controller.IsAvailable || controller.VirtualController == null)
-                continue;
+            // In split mode, process both controllers together and merge to shared controller
+            ProcessSplitControllerInput(poses, input, debugDataList);
+        }
+        else
+        {
+            // In light gun mode, process each controller individually
+            foreach (var controller in new[] { _leftHand, _rightHand })
+            {
+                if (!controller.IsAvailable || controller.VirtualController == null)
+                    continue;
 
-            uint controllerIndex = _vrSystem.GetTrackedDeviceIndexForControllerRole(controller.Role);
-            if (controllerIndex == Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid)
-                continue;
+                uint controllerIndex = _vrSystem.GetTrackedDeviceIndexForControllerRole(controller.Role);
+                if (controllerIndex == Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid)
+                    continue;
 
-            var debugData = ProcessControllerInput(controller, controllerIndex, poses, input);
-            if (debugData != null)
-                debugDataList.Add(debugData);
+                var debugData = ProcessControllerInput(controller, controllerIndex, poses, input);
+                if (debugData != null)
+                    debugDataList.Add(debugData);
+            }
         }
 
         // Update 3D debug window with all controllers
@@ -923,6 +1146,378 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Processes input from both controllers in split Xbox controller mode.
+    /// Merges inputs to a single shared virtual controller.
+    /// </summary>
+    private void ProcessSplitControllerInput(Valve.VR.TrackedDevicePose_t[] poses, Valve.VR.CVRInput input, List<ControllerDebugData> debugDataList)
+    {
+        if (_sharedVirtualController == null || _vrSystem == null)
+            return;
+
+        // Get controller indices
+        uint leftIndex = _vrSystem.GetTrackedDeviceIndexForControllerRole(Valve.VR.ETrackedControllerRole.LeftHand);
+        uint rightIndex = _vrSystem.GetTrackedDeviceIndexForControllerRole(Valve.VR.ETrackedControllerRole.RightHand);
+
+        // Initialize default values
+        float leftStickX = 0f, leftStickY = 0f;
+        float rightStickX = 0f, rightStickY = 0f;
+        bool dpadUp = false, dpadDown = false, dpadLeft = false, dpadRight = false;
+        bool leftTriggerPressed = false, rightTriggerPressed = false;
+        bool leftGripPressed = false, rightGripPressed = false;
+        bool aPressed = false, bPressed = false;
+        bool xPressed = false, yPressed = false;
+        bool leftThumbPressed = false, rightThumbPressed = false;
+        float leftTriggerValue = 0f, rightTriggerValue = 0f;
+        float leftGripValue = 0f, rightGripValue = 0f;
+        bool leftThumbTouching = false, rightThumbTouching = false;
+        System.Windows.Media.Media3D.Vector3D leftGyro = new(), rightGyro = new();
+
+        // Process left controller
+        if (_leftHand.IsAvailable && leftIndex != Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid)
+        {
+            var leftData = GetControllerInputData(leftIndex, _leftHandHandle, poses, input);
+            if (leftData != null)
+            {
+                leftStickX = leftData.Value.thumbstickX;
+                leftStickY = leftData.Value.thumbstickY;
+                leftThumbPressed = leftData.Value.thumbstickPressed;
+                leftGripPressed = leftData.Value.gripPressed;
+                leftTriggerPressed = leftData.Value.triggerPressed;
+                leftTriggerValue = leftData.Value.triggerValue;
+                leftGripValue = leftData.Value.gripValue;
+                xPressed = leftData.Value.aPressed;
+                yPressed = leftData.Value.bPressed;
+                leftThumbTouching = leftData.Value.thumbTouching;
+                leftGyro = leftData.Value.angularVelocity;
+
+                // Left trackpad contributes to D-pad
+                if (leftData.Value.trackpadTouched)
+                {
+                    if (leftData.Value.trackpadY > 0.5f) dpadUp = true;
+                    if (leftData.Value.trackpadY < -0.5f) dpadDown = true;
+                    if (leftData.Value.trackpadX < -0.5f) dpadLeft = true;
+                    if (leftData.Value.trackpadX > 0.5f) dpadRight = true;
+                }
+            }
+        }
+
+        // Process right controller
+        if (_rightHand.IsAvailable && rightIndex != Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid)
+        {
+            var rightData = GetControllerInputData(rightIndex, _rightHandHandle, poses, input);
+            if (rightData != null)
+            {
+                rightStickX = rightData.Value.thumbstickX;
+                rightStickY = rightData.Value.thumbstickY;
+                rightThumbPressed = rightData.Value.thumbstickPressed;
+                rightGripPressed = rightData.Value.gripPressed;
+                rightTriggerPressed = rightData.Value.triggerPressed;
+                rightTriggerValue = rightData.Value.triggerValue;
+                rightGripValue = rightData.Value.gripValue;
+                aPressed = rightData.Value.aPressed;
+                bPressed = rightData.Value.bPressed;
+                rightThumbTouching = rightData.Value.thumbTouching;
+                rightGyro = rightData.Value.angularVelocity;
+
+                // Right trackpad contributes to D-pad
+                if (rightData.Value.trackpadTouched)
+                {
+                    if (rightData.Value.trackpadY > 0.5f) dpadUp = true;
+                    if (rightData.Value.trackpadY < -0.5f) dpadDown = true;
+                    if (rightData.Value.trackpadX < -0.5f) dpadLeft = true;
+                    if (rightData.Value.trackpadX > 0.5f) dpadRight = true;
+                }
+            }
+        }
+
+        // Apply stick deadzone
+        if (Math.Abs(leftStickX) < _stickDeadzone) leftStickX = 0f;
+        if (Math.Abs(leftStickY) < _stickDeadzone) leftStickY = 0f;
+        if (Math.Abs(rightStickX) < _stickDeadzone) rightStickX = 0f;
+        if (Math.Abs(rightStickY) < _stickDeadzone) rightStickY = 0f;
+        
+        // Apply gyro based on which controller has capacitive touch active
+        // Left controller: orientation delta from reference pose captured on touch start.
+        // Tilting the controller relative to its neutral position drives the stick directly.
+        if (leftThumbTouching && leftIndex != Valve.VR.OpenVR.k_unTrackedDeviceIndexInvalid && poses[leftIndex].bPoseIsValid)
+        {
+            // Capture reference orientation the moment the thumb touches
+            if (!_leftWasTouching)
+                _leftGyroRefMatrix = poses[leftIndex].mDeviceToAbsoluteTracking;
+
+            if (_leftGyroRefMatrix.HasValue)
+            {
+                var rm = _leftGyroRefMatrix.Value;
+                var pm = poses[leftIndex].mDeviceToAbsoluteTracking;
+
+                // Reference axes from the pose at touch start
+                // right  = col0: (m0, m4, m8)
+                // fwd    = -col2: (-m2, -m6, -m10)  (OpenVR col2 is "back")
+                float refRightX = rm.m0, refRightY = rm.m4, refRightZ = rm.m8;
+                float refFwdX   = -rm.m2, refFwdY = -rm.m6, refFwdZ = -rm.m10;
+
+                // Flatten both axes onto the horizontal plane (drop Y/vertical component)
+                // so leaning your whole body doesn't skew the stick.
+                refRightY = 0f;
+                refFwdY   = 0f;
+
+                // Normalise after flattening
+                float rLen = MathF.Sqrt(refRightX * refRightX + refRightZ * refRightZ);
+                float fLen = MathF.Sqrt(refFwdX   * refFwdX   + refFwdZ   * refFwdZ);
+                if (rLen > 0.001f) { refRightX /= rLen; refRightZ /= rLen; }
+                if (fLen > 0.001f) { refFwdX   /= fLen; refFwdZ   /= fLen; }
+
+                // World-space displacement since touch start (X = right, Y = up, Z = forward/back in OpenVR)
+                float dx = pm.m3  - rm.m3;
+                float dy = pm.m7  - rm.m7;   // vertical – not used
+                float dz = pm.m11 - rm.m11;
+
+                // Project onto reference right and forward (horizontal plane only)
+                float projX =  dx * refRightX + dz * refRightZ;
+                float projY =  dx * refFwdX   + dz * refFwdZ;
+
+                // Apply deadzone
+                if (Math.Abs(projX) < _gyroDeadzone * 0.05f) projX = 0f;
+                if (Math.Abs(projY) < _gyroDeadzone * 0.05f) projY = 0f;
+
+                // Scale: _leftOrientScale * 8 → at default 0.5, ~25 cm = full deflection
+                float orientX = Math.Clamp(projX * _leftOrientScale * 8f, -1f, 1f);
+                float orientY = Math.Clamp(projY * _leftOrientScale * 8f, -1f, 1f);
+
+                // Thumbstick overrides orientation when pushed past deadzone
+                bool stickActive = Math.Abs(leftStickX) > _stickDeadzone || Math.Abs(leftStickY) > _stickDeadzone;
+                if (!stickActive)
+                {
+                    leftStickX = orientX;
+                    leftStickY = orientY;
+                }
+
+                _dbgLeftStickX = leftStickX;
+                _dbgLeftStickY = leftStickY;
+            }
+        }
+        else if (!leftThumbTouching)
+        {
+            // Reset reference when thumb lifts so next touch starts fresh
+            _leftGyroRefMatrix = null;
+            _dbgLeftStickX = _dbgLeftStickY = 0f;
+        }
+        _leftWasTouching = leftThumbTouching;
+
+        // Right gyro: direct velocity → stick (great for aiming)
+        if (rightThumbTouching)
+        {
+            float gyroX = (float)rightGyro.X;
+            float gyroY = (float)rightGyro.Y;
+            
+            // Apply deadzone
+            if (Math.Abs(gyroX) < _gyroDeadzone) gyroX = 0f;
+            if (Math.Abs(gyroY) < _gyroDeadzone) gyroY = 0f;
+            
+            // Apply right controller gyro to right stick (Y gyro = horizontal aim, X gyro = vertical aim)
+            rightStickX = Math.Clamp(rightStickX - gyroY * _gyroScale, -1f, 1f);
+            rightStickY = Math.Clamp(rightStickY + gyroX * _gyroScale, -1f, 1f);
+            
+            if (Math.Abs(gyroX) > _gyroDeadzone || Math.Abs(gyroY) > _gyroDeadzone)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Gyro] Right controller gyro=({gyroX:F3}, {gyroY:F3}) -> rightStick=({rightStickX:F3}, {rightStickY:F3})");
+            }
+        }
+
+        // Convert stick values to Xbox format
+        short leftStickXShort = (short)(Math.Clamp(leftStickX, -1f, 1f) * 32767);
+        short leftStickYShort = (short)(Math.Clamp(leftStickY, -1f, 1f) * 32767);
+        short rightStickXShort = (short)(Math.Clamp(rightStickX, -1f, 1f) * 32767);
+        short rightStickYShort = (short)(Math.Clamp(rightStickY, -1f, 1f) * 32767);
+
+        // Set axis values
+        _sharedVirtualController.SetAxisValue(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Axis.LeftThumbX, leftStickXShort);
+        _sharedVirtualController.SetAxisValue(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Axis.LeftThumbY, leftStickYShort);
+        _sharedVirtualController.SetAxisValue(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Axis.RightThumbX, rightStickXShort);
+        _sharedVirtualController.SetAxisValue(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Axis.RightThumbY, rightStickYShort);
+
+        // Set D-pad
+        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Up, dpadUp);
+        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Down, dpadDown);
+        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Left, dpadLeft);
+        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Right, dpadRight);
+
+        // Set triggers (only from trigger, not grip)
+        byte leftTriggerByte = (byte)(Math.Clamp(leftTriggerValue, 0f, 1f) * 255f);
+        byte rightTriggerByte = (byte)(Math.Clamp(rightTriggerValue, 0f, 1f) * 255f);
+        _sharedVirtualController.SetSliderValue(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Slider.LeftTrigger, leftTriggerByte);
+        _sharedVirtualController.SetSliderValue(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Slider.RightTrigger, rightTriggerByte);
+
+        // Set buttons
+        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.A, aPressed);
+        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.B, bPressed);
+        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.X, xPressed);
+        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Y, yPressed);
+        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.LeftThumb, leftThumbPressed);
+        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.RightThumb, rightThumbPressed);
+
+        // Shoulders (grip buttons when squeezed past 0.25)
+        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.LeftShoulder, leftGripValue > 0.25f);
+        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.RightShoulder, rightGripValue > 0.25f);
+
+        // Start / Back
+        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Start, false);
+        _sharedVirtualController.SetButtonState(Nefarius.ViGEm.Client.Targets.Xbox360.Xbox360Button.Back, false);
+
+        _sharedVirtualController.SubmitReport();
+    }
+
+    /// <summary>
+    /// Gets controller input data for split mode processing.
+    /// </summary>
+    private struct ControllerInputData
+    {
+        public float thumbstickX, thumbstickY;
+        public float trackpadX, trackpadY;
+        public bool thumbstickPressed, trackpadTouched;
+        public bool triggerPressed, gripPressed;
+        public bool aPressed, bPressed;
+        public bool aTouched, bTouched;
+        public float triggerValue, gripValue;
+        public bool thumbTouching;
+        public System.Windows.Media.Media3D.Vector3D angularVelocity;
+    }
+
+    /// <summary>
+    /// Reads input data from a controller.
+    /// </summary>
+    private ControllerInputData? GetControllerInputData(uint controllerIndex, ulong sourceHandle, Valve.VR.TrackedDevicePose_t[] poses, Valve.VR.CVRInput input)
+    {
+        var pose = poses[controllerIndex];
+        if (!pose.bPoseIsValid)
+            return null;
+
+        var data = new ControllerInputData();
+
+        // Read analog actions
+        var analog = new Valve.VR.InputAnalogActionData_t();
+
+        if (input.GetAnalogActionData(_thumbstickAction, ref analog,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputAnalogActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && analog.bActive)
+        {
+            data.thumbstickX = analog.x;
+            data.thumbstickY = analog.y;
+        }
+
+        analog = new Valve.VR.InputAnalogActionData_t();
+        if (input.GetAnalogActionData(_trackpadAction, ref analog,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputAnalogActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && analog.bActive)
+        {
+            data.trackpadX = analog.x;
+            data.trackpadY = analog.y;
+        }
+
+        analog = new Valve.VR.InputAnalogActionData_t();
+        if (input.GetAnalogActionData(_triggerValueAction, ref analog,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputAnalogActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && analog.bActive)
+        {
+            data.triggerValue = analog.x;
+        }
+
+        analog = new Valve.VR.InputAnalogActionData_t();
+        if (input.GetAnalogActionData(_gripValueAction, ref analog,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputAnalogActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && analog.bActive)
+        {
+            data.gripValue = analog.x;
+        }
+
+        // Read digital actions
+        var digital = new Valve.VR.InputDigitalActionData_t();
+
+        if (input.GetDigitalActionData(_triggerAction, ref digital,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputDigitalActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && digital.bActive)
+        {
+            data.triggerPressed = digital.bState;
+        }
+
+        digital = new Valve.VR.InputDigitalActionData_t();
+        if (input.GetDigitalActionData(_gripAction, ref digital,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputDigitalActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && digital.bActive)
+        {
+            data.gripPressed = digital.bState;
+        }
+
+        digital = new Valve.VR.InputDigitalActionData_t();
+        if (input.GetDigitalActionData(_aButtonAction, ref digital,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputDigitalActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && digital.bActive)
+        {
+            data.aPressed = digital.bState;
+        }
+
+        digital = new Valve.VR.InputDigitalActionData_t();
+        if (input.GetDigitalActionData(_aButtonTouchAction, ref digital,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputDigitalActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && digital.bActive)
+        {
+            data.aTouched = digital.bState;
+        }
+
+        digital = new Valve.VR.InputDigitalActionData_t();
+        if (input.GetDigitalActionData(_bButtonAction, ref digital,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputDigitalActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && digital.bActive)
+        {
+            data.bPressed = digital.bState;
+        }
+
+        digital = new Valve.VR.InputDigitalActionData_t();
+        if (input.GetDigitalActionData(_bButtonTouchAction, ref digital,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputDigitalActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && digital.bActive)
+        {
+            data.bTouched = digital.bState;
+        }
+
+        digital = new Valve.VR.InputDigitalActionData_t();
+        if (input.GetDigitalActionData(_thumbstickClickAction, ref digital,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputDigitalActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && digital.bActive)
+        {
+            data.thumbstickPressed = digital.bState;
+        }
+
+        digital = new Valve.VR.InputDigitalActionData_t();
+        if (input.GetDigitalActionData(_trackpadTouchAction, ref digital,
+                (uint)System.Runtime.InteropServices.Marshal.SizeOf(typeof(Valve.VR.InputDigitalActionData_t)), sourceHandle)
+            == Valve.VR.EVRInputError.None && digital.bActive)
+        {
+            data.trackpadTouched = digital.bState;
+        }
+
+        // Gyro is active when any capacitive touch sensor is touched (A, B, or trackpad)
+        data.thumbTouching = data.trackpadTouched || data.aTouched || data.bTouched;
+
+        // Transform world-space angular velocity into the controller's local frame so that
+        // each axis always maps to the same physical tilt regardless of controller orientation.
+        // Pose matrix columns are the controller's local axes expressed in world space:
+        //   right (X):   m0, m4, m8
+        //   up    (Y):   m1, m5, m9
+        //   fwd   (Z):   m2, m6, m10
+        var pm = pose.mDeviceToAbsoluteTracking;
+        float wx = pose.vAngularVelocity.v0;
+        float wy = pose.vAngularVelocity.v1;
+        float wz = pose.vAngularVelocity.v2;
+        data.angularVelocity = new System.Windows.Media.Media3D.Vector3D(
+            wx * pm.m0 + wy * pm.m4 + wz * pm.m8,   // local X (pitch around right axis)
+            wx * pm.m1 + wy * pm.m5 + wz * pm.m9,   // local Y (yaw around up axis)
+            wx * pm.m2 + wy * pm.m6 + wz * pm.m10); // local Z (roll around fwd axis)
+
+        return data;
+    }
+
+    /// <summary>
     /// Gets the pointing direction from a controller pose matrix with 45° pitch applied.
     /// </summary>
     private Point3D GetPointingDirection(Valve.VR.HmdMatrix34_t m)
@@ -969,13 +1564,25 @@ public partial class MainWindow : Window
     {
         try
         {
+            // Ensure mode matches the UI selection
+            if (ControllerModeComboBox != null)
+            {
+                _currentMode = (ControllerMode)ControllerModeComboBox.SelectedIndex;
+            }
+            
             var data = new CalibrationData
             {
                 Directions = _calibrationDirections.Select(p => new double[] { p.X, p.Y, p.Z }).ToArray(),
-                Positions = _calibrationPositions.Select(p => new double[] { p.X, p.Y, p.Z }).ToArray()
+                Positions = _calibrationPositions.Select(p => new double[] { p.X, p.Y, p.Z }).ToArray(),
+                ControllerMode = (int)_currentMode,
+                StickDeadzone = _stickDeadzone,
+                GyroDeadzone = _gyroDeadzone,
+                GyroScale = _gyroScale,
+                LeftOrientScale = _leftOrientScale
             };
             var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
             System.IO.File.WriteAllText(GetCalibrationFilePath(), json);
+            System.Diagnostics.Debug.WriteLine($"[SaveCalibration] Saved ControllerMode={data.ControllerMode}, StickDeadzone={data.StickDeadzone}, GyroDeadzone={data.GyroDeadzone}, GyroScale={data.GyroScale}, LeftOrientScale={data.LeftOrientScale}");
         }
         catch (Exception ex)
         {
@@ -989,24 +1596,63 @@ public partial class MainWindow : Window
         {
             var path = GetCalibrationFilePath();
             if (!System.IO.File.Exists(path))
+            {
+                System.Diagnostics.Debug.WriteLine("[LoadCalibration] File does not exist");
                 return;
+            }
 
+            System.Diagnostics.Debug.WriteLine("[LoadCalibration] Loading settings...");
+            
             var json = System.IO.File.ReadAllText(path);
             var data = JsonSerializer.Deserialize<CalibrationData>(json);
-            if (data?.Directions != null && data.Positions != null && data.Directions.Length == 3 && data.Positions.Length == 3)
+            if (data != null)
             {
-                for (int i = 0; i < 3; i++)
+                System.Diagnostics.Debug.WriteLine($"[LoadCalibration] Loaded ControllerMode={data.ControllerMode}, StickDeadzone={data.StickDeadzone}, GyroDeadzone={data.GyroDeadzone}, GyroScale={data.GyroScale}");
+                
+                if (data.Directions != null && data.Positions != null && data.Directions.Length == 3 && data.Positions.Length == 3)
                 {
-                    _calibrationDirections[i] = new Point3D(data.Directions[i][0], data.Directions[i][1], data.Directions[i][2]);
-                    _calibrationPositions[i] = new Point3D(data.Positions[i][0], data.Positions[i][1], data.Positions[i][2]);
+                    for (int i = 0; i < 3; i++)
+                    {
+                        _calibrationDirections[i] = new Point3D(data.Directions[i][0], data.Directions[i][1], data.Directions[i][2]);
+                        _calibrationPositions[i] = new Point3D(data.Positions[i][0], data.Positions[i][1], data.Positions[i][2]);
+                    }
+                    _calibrationStep = CalibrationStep.Complete;
+                    CalibrationInstructions.Text = "Calibration loaded from file.";
                 }
-                _calibrationStep = CalibrationStep.Complete;
-                CalibrationInstructions.Text = "Calibration loaded from file.";
+                
+                _currentMode = (ControllerMode)data.ControllerMode;
+                ControllerModeComboBox.SelectedIndex = (int)_currentMode;
+                
+                _stickDeadzone = data.StickDeadzone;
+                _gyroDeadzone = data.GyroDeadzone;
+                _gyroScale = data.GyroScale;
+                _leftOrientScale = data.LeftOrientScale;
+                
+                StickDeadzoneSlider.Value = _stickDeadzone;
+                GyroDeadzoneSlider.Value = _gyroDeadzone;
+                GyroScaleSlider.Value = _gyroScale;
+                LeftOrientScaleSlider.Value = _leftOrientScale;
+                StickDeadzoneValue.Text = _stickDeadzone.ToString("F2");
+                GyroDeadzoneValue.Text = _gyroDeadzone.ToString("F2");
+                GyroScaleValue.Text = _gyroScale.ToString("F2");
+                LeftOrientScaleValue.Text = _leftOrientScale.ToString("F2");
 
-                // Auto-start emulation with loaded calibration
-                if (InitOpenVR())
+                if (_currentMode == ControllerMode.SplitXboxController)
                 {
-                    StartViGEmEmulation();
+                    ModeDescription.Text = "Both controllers control one Xbox controller. Left controller → left stick, right controller → right stick. Gyro active when touching A/B/trackpad.";
+                    SplitModeSettings.Visibility = Visibility.Visible;
+                    CalibrationSection.Visibility = Visibility.Collapsed;
+                }
+
+                System.Diagnostics.Debug.WriteLine("[LoadCalibration] Settings loaded successfully");
+
+                if (_calibrationStep == CalibrationStep.Complete && _currentMode == ControllerMode.LightGun)
+                {
+                    if (InitOpenVR()) StartViGEmEmulation();
+                }
+                else if (_currentMode == ControllerMode.SplitXboxController)
+                {
+                    if (InitOpenVR()) StartViGEmEmulation();
                 }
             }
         }
@@ -1020,6 +1666,11 @@ public partial class MainWindow : Window
     {
         public double[][]? Directions { get; set; }
         public double[][]? Positions { get; set; }
+        public int ControllerMode { get; set; }
+        public float StickDeadzone { get; set; } = 0.1f;
+        public float GyroDeadzone { get; set; } = 0.05f;
+        public float GyroScale { get; set; } = 0.5f;
+        public float LeftOrientScale { get; set; } = 0.5f;
     }
 
     private struct Point3D
